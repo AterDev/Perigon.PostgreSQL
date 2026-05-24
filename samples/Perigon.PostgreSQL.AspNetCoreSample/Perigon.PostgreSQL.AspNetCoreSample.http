@@ -1,0 +1,87 @@
+@Perigon.PostgreSQL.AspNetCoreSample_HostAddress = http://localhost:5088
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/
+Accept: application/json
+
+###
+
+POST {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/seed
+Accept: application/json
+
+###
+
+POST {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/bulk/values
+Content-Type: application/json
+
+[
+  {
+    "userName": "bulk-values-api",
+    "age": 34,
+    "isActive": true,
+    "status": "bulk-values-api",
+    "tags": ["bulk", "values"],
+    "profileJson": "{\"source\":\"api\"}"
+  }
+]
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users?status=active&tag=postgres&minAge=18
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/summaries?status=active
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/names?status=active
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/statuses
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/jsonpath?path=$.level%20?%20(@%20%3E%202)
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/with-blogs?status=active&publicOnly=true
+Accept: application/json
+
+###
+
+PATCH {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/1/age/increment
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/reports/user-blogs
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/reports/user-blog-links?publicOnly=true
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/stats/users-by-status
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/stats/distinct-active-by-status
+Accept: application/json
+
+###
+
+GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/sql-preview/left-join
+Accept: application/json
+
+###

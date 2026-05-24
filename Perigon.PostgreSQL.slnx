@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/Perigon.PostgreSQL.AspNetCoreSample/Perigon.PostgreSQL.AspNetCoreSample.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Perigon.PostgreSQL.Analyzers/Perigon.PostgreSQL.Analyzers.csproj" />
+    <Project Path="src/Perigon.PostgreSQL.SourceGeneration/Perigon.PostgreSQL.SourceGeneration.csproj" />
+    <Project Path="src/Perigon.PostgreSQL/Perigon.PostgreSQL.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Perigon.PostgreSQL.IntegrationTests/Perigon.PostgreSQL.IntegrationTests.csproj" />
+    <Project Path="tests/Perigon.PostgreSQL.NativeAotSmoke/Perigon.PostgreSQL.NativeAotSmoke.csproj" />
+    <Project Path="tests/Perigon.PostgreSQL.Tests/Perigon.PostgreSQL.Tests.csproj" />
+  </Folder>
+</Solution>
