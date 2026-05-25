@@ -1,8 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
-using System.Reflection;
 using Perigon.PostgreSQL.Expressions;
 using Perigon.PostgreSQL.Execution;
+using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Query;
 using Perigon.PostgreSQL.Sql;
 
@@ -56,10 +56,11 @@ public static class IncludeManyExtensions
             return [];
         }
 
-        var parentProperty = ReadProperty(parentKey.Body);
-        var childProperty = ReadProperty(childForeignKey.Body);
+        var parentModel = EntityModel.For<TParent>();
+        var parentColumn = parentModel.GetColumn(ReadPropertyName(parentKey.Body));
+        var childColumn = children.Model.GetColumn(ReadPropertyName(childForeignKey.Body));
         var keys = parentRows
-            .Select(parent => (TKey?)parentProperty.GetValue(parent))
+            .Select(parent => (TKey?)EntityValueAccessorRegistry.GetValue(parentColumn, parent))
             .Where(key => key is not null)
             .Select(key => key!)
             .Distinct()
@@ -67,17 +68,17 @@ public static class IncludeManyExtensions
 
         var childRows = keys.Length == 0
             ? []
-            : await LoadChildrenAsync(children, childProperty.Name, keys, childQuery, cancellationToken).ConfigureAwait(false);
+            : await LoadChildrenAsync(children, childColumn, keys, childQuery, cancellationToken).ConfigureAwait(false);
 
         var childLookup = childRows
-            .GroupBy(child => (TKey?)childProperty.GetValue(child))
+            .GroupBy(child => (TKey?)EntityValueAccessorRegistry.GetValue(childColumn, child))
             .Where(group => group.Key is not null)
             .ToDictionary(group => group.Key!, group => group.ToList());
 
         var results = new List<TResult>(parentRows.Count);
         foreach (var parent in parentRows)
         {
-            var key = (TKey?)parentProperty.GetValue(parent);
+            var key = (TKey?)EntityValueAccessorRegistry.GetValue(parentColumn, parent);
             var matchingChildren = key is not null && childLookup.TryGetValue(key, out var grouped)
                 ? grouped
                 : [];
@@ -91,14 +92,13 @@ public static class IncludeManyExtensions
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TChild,
         TKey>(
         DbSet<TChild> children,
-        string childPropertyName,
+        ColumnModel column,
         TKey[] keys,
         Func<IQueryable<TChild>, IQueryable<TChild>>? childQuery,
         CancellationToken cancellationToken)
         where TChild : class, new()
         where TKey : notnull
     {
-        var column = children.Model.GetColumn(childPropertyName);
         var parameters = new ParameterBag();
         var alias = "e";
         var selectColumns = string.Join(", ", children.Model.Columns.Select(c => $"{alias}.{Identifier.Quote(c.ColumnName)}"));
@@ -136,11 +136,11 @@ public static class IncludeManyExtensions
             cancellationToken);
     }
 
-    private static PropertyInfo ReadProperty(Expression expression)
+    private static string ReadPropertyName(Expression expression)
     {
         expression = StripConvert(expression);
-        return expression is MemberExpression { Member: PropertyInfo property }
-            ? property
+        return expression is MemberExpression { Member: System.Reflection.PropertyInfo property }
+            ? property.Name
             : throw new NotSupportedException($"Include key expression '{expression}' must be a mapped property.");
     }
 

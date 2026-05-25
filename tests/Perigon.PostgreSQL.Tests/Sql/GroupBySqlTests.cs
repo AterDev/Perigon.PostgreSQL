@@ -97,6 +97,26 @@ public sealed class GroupBySqlTests
     }
 
     [Fact]
+    public void GroupBy_projection_where_generates_having_sql()
+    {
+        using var db = new TestDbContext();
+        var minCount = 2;
+
+        var sql = db.RichUsers
+            .Where(u => u.IsActive)
+            .GroupBy(u => u.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .Where(x => x.Count >= minCount && x.Status != null)
+            .ToSql();
+
+        Assert.Equal(
+            "SELECT e.\"status\" AS \"Status\", count(*) AS \"Count\" FROM \"rich_users\" AS e WHERE e.\"is_active\" GROUP BY e.\"status\" HAVING ((count(*) >= $1) AND e.\"status\" IS NOT NULL)",
+            sql.CommandText);
+        Assert.Single(sql.Parameters);
+        Assert.Equal(minCount, sql.Parameters[0].Value);
+    }
+
+    [Fact]
     public void GroupBy_projection_where_preserves_source_parameters()
     {
         using var db = new TestDbContext();
@@ -176,6 +196,44 @@ public sealed class GroupBySqlTests
 
         Assert.Equal(
             "SELECT e.\"status\" AS \"Status\", count(distinct e.\"user_name\") AS \"DistinctNames\", count(distinct e.\"age\") AS \"DistinctAges\" FROM \"rich_users\" AS e GROUP BY e.\"status\"",
+            sql.CommandText);
+    }
+
+    [Fact]
+    public void GroupBy_array_agg_generates_array_agg_sql()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers
+            .GroupBy(u => u.Status)
+            .Select(g => new
+            {
+                Status = g.Key,
+                Names = g.ArrayAgg(u => u.UserName)
+            })
+            .ToSql();
+
+        Assert.Equal(
+            "SELECT e.\"status\" AS \"Status\", array_agg(e.\"user_name\") AS \"Names\" FROM \"rich_users\" AS e GROUP BY e.\"status\"",
+            sql.CommandText);
+    }
+
+    [Fact]
+    public void GroupBy_jsonb_agg_generates_jsonb_agg_sql()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers
+            .GroupBy(u => u.Status)
+            .Select(g => new
+            {
+                Status = g.Key,
+                Profiles = g.JsonbAgg(u => u.ProfileJson)
+            })
+            .ToSql();
+
+        Assert.Equal(
+            "SELECT e.\"status\" AS \"Status\", jsonb_agg(e.\"profile_json\")::text AS \"Profiles\" FROM \"rich_users\" AS e GROUP BY e.\"status\"",
             sql.CommandText);
     }
 

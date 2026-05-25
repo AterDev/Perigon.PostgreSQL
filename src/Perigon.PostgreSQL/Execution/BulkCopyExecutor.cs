@@ -38,7 +38,7 @@ internal static class BulkCopyExecutor
                 await importer.StartRowAsync(cancellationToken).ConfigureAwait(false);
                 foreach (var column in columns)
                 {
-                    var value = column.Property.GetValue(row);
+                    var value = EntityValueAccessorRegistry.GetValue(column, row);
                     var dbType = InferDbType(column);
                     if (dbType is null)
                     {

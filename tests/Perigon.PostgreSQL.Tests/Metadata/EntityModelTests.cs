@@ -1,4 +1,5 @@
 using Perigon.PostgreSQL.Metadata;
+using Perigon.PostgreSQL.Execution;
 using Perigon.PostgreSQL.Tests.Models;
 
 namespace Perigon.PostgreSQL.Tests.Metadata;
@@ -10,6 +11,9 @@ public sealed class EntityModelTests
     {
         var model = EntityModel.For<ConventionUser>();
 
+        Assert.True(model.IsGenerated);
+        Assert.True(EntityMaterializerRegistry.TryGet<ConventionUser>(out _));
+        Assert.True(EntityValueAccessorRegistry.TryGetAccessor(typeof(ConventionUser), nameof(ConventionUser.UserName), out _));
         Assert.Equal("convention_users", model.TableName);
         Assert.Equal("id", model.GetColumn(nameof(ConventionUser.Id)).ColumnName);
         Assert.Equal("user_name", model.GetColumn(nameof(ConventionUser.UserName)).ColumnName);

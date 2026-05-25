@@ -1,4 +1,5 @@
 using Perigon.PostgreSQL;
+using Perigon.PostgreSQL.Execution;
 
 namespace Perigon.PostgreSQL.IntegrationTests;
 
@@ -61,6 +62,8 @@ public sealed class QueryShapeIntegrationTests
     public async Task Multi_key_group_by_projection_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        Assert.True(EntityMaterializerRegistry.TryGet<IntegrationUserStatusStat>(out _));
+
         _ = await db.IntegrationUsers.InsertManyReturningAsync(
         [
             new IntegrationUser
@@ -208,6 +211,106 @@ public sealed class QueryShapeIntegrationTests
         var row = Assert.Single(rows);
         Assert.Equal("count-distinct", row.Status);
         Assert.Equal(2, row.DistinctActiveStates);
+    }
+
+    [Fact]
+    public async Task Native_aggregate_group_projection_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "NativeAgg-A",
+                Age = 27,
+                IsActive = true,
+                Status = "native-aggregate",
+                CreatedAt = new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["native-aggregate"],
+                ProfileJson = """{"nativeAgg":1}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "NativeAgg-B",
+                Age = 28,
+                IsActive = true,
+                Status = "native-aggregate",
+                CreatedAt = new DateTime(2026, 4, 13, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["native-aggregate"],
+                ProfileJson = """{"nativeAgg":2}"""
+            }
+        ]);
+
+        var rows = await db.IntegrationUsers
+            .Where(u => u.Status == "native-aggregate")
+            .GroupBy(u => u.Status)
+            .Select(g => new IntegrationAggregatePayload
+            {
+                Status = g.Key,
+                Names = g.ArrayAgg(u => u.UserName),
+                Profiles = g.JsonbAgg(u => u.ProfileJson)
+            })
+            .ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.Equal("native-aggregate", row.Status);
+        Assert.Equal(["NativeAgg-A", "NativeAgg-B"], row.Names.Order().ToArray());
+        Assert.Contains("\"nativeAgg\": 1", row.Profiles, StringComparison.Ordinal);
+        Assert.Contains("\"nativeAgg\": 2", row.Profiles, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Group_by_having_projection_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "Having-A",
+                Age = 29,
+                IsActive = true,
+                Status = "having-match",
+                CreatedAt = new DateTime(2026, 4, 14, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["having"],
+                ProfileJson = """{"having":1}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Having-B",
+                Age = 30,
+                IsActive = true,
+                Status = "having-match",
+                CreatedAt = new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["having"],
+                ProfileJson = """{"having":2}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Having-C",
+                Age = 31,
+                IsActive = true,
+                Status = "having-miss",
+                CreatedAt = new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["having"],
+                ProfileJson = """{"having":3}"""
+            }
+        ]);
+
+        var rows = await db.IntegrationUsers
+            .Where(u => u.Status!.StartsWith("having-"))
+            .GroupBy(u => u.Status)
+            .Select(g => new IntegrationUserStatusStat
+            {
+                Status = g.Key,
+                Count = g.LongCount()
+            })
+            .Where(x => x.Count >= 2)
+            .ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.Equal("having-match", row.Status);
+        Assert.Equal(2, row.Count);
     }
 
     [Fact]

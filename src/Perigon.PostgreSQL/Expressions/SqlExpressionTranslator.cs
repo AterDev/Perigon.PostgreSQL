@@ -252,6 +252,11 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             return VisitEnumerableAny(node);
         }
 
+        if (node.Method.Name == nameof(Enumerable.All))
+        {
+            return VisitEnumerableAll(node);
+        }
+
         if (node.Method.Name is "ContainsAll" or "Overlaps" or "IsContainedBy")
         {
             var source = node.Object ?? node.Arguments[0];
@@ -377,6 +382,34 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             ?? TryReadAnyPredicateValue(binary.Right, binary.Left, lambda.Parameters[0])
             ?? throw new UnsupportedQueryExpressionException("Array Any predicate must compare the element to a value.");
         _sql.Push($"{_parameters.Add(ExpressionValueReader.Read(valueExpression))} = ANY({column})");
+        return node;
+    }
+
+    private Expression VisitEnumerableAll(MethodCallExpression node)
+    {
+        var source = node.Arguments[0];
+        if (!IsEntityMember(source))
+        {
+            throw new UnsupportedQueryExpressionException("Only entity array All is supported in SQL translation.");
+        }
+
+        if (node.Arguments.Count != 2)
+        {
+            throw new UnsupportedQueryExpressionException("Array All requires a predicate in SQL translation.");
+        }
+
+        Visit(StripConvert(source));
+        var column = _sql.Pop();
+        var lambda = UnquoteLambda(node.Arguments[1]);
+        if (StripConvert(lambda.Body) is not BinaryExpression { NodeType: ExpressionType.Equal } binary)
+        {
+            throw new UnsupportedQueryExpressionException("Array All currently supports equality predicates only.");
+        }
+
+        var valueExpression = TryReadAnyPredicateValue(binary.Left, binary.Right, lambda.Parameters[0])
+            ?? TryReadAnyPredicateValue(binary.Right, binary.Left, lambda.Parameters[0])
+            ?? throw new UnsupportedQueryExpressionException("Array All predicate must compare the element to a value.");
+        _sql.Push($"({column} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest({column}) AS p(\"value\") WHERE p.\"value\" IS DISTINCT FROM {_parameters.Add(ExpressionValueReader.Read(valueExpression))}))");
         return node;
     }
 

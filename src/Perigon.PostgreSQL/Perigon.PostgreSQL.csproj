@@ -15,4 +15,9 @@
     <PackageReference Include="Npgsql" Version="10.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Perigon.PostgreSQL.SourceGeneration\Perigon.PostgreSQL.SourceGeneration.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <None Include="..\Perigon.PostgreSQL.SourceGeneration\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.SourceGeneration.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" Condition="Exists('..\Perigon.PostgreSQL.SourceGeneration\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.SourceGeneration.dll')" />
+  </ItemGroup>
+
 </Project>

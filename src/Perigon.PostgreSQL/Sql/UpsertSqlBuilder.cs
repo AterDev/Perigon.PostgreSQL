@@ -25,7 +25,7 @@ internal static class UpsertSqlBuilder
         var conflictColumns = ReadConflictColumns(model, conflictKey.Body);
         var columnSql = string.Join(", ", columns.Select(c => Identifier.Quote(c.ColumnName)));
         var rows = entities.Select(entity =>
-            "(" + string.Join(", ", columns.Select(c => parameters.Add(c.Property.GetValue(entity), InferDbType(c)))) + ")");
+            "(" + string.Join(", ", columns.Select(c => parameters.Add(EntityValueAccessorRegistry.GetValue(c, entity), InferDbType(c)))) + ")");
 
         var sql = $"INSERT INTO {model.StoreObjectName} ({columnSql}) VALUES {string.Join(", ", rows)} ON CONFLICT ({string.Join(", ", conflictColumns.Select(Identifier.Quote))})";
         if (options?.DoNothing == true)

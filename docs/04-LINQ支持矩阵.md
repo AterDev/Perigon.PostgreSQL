@@ -97,7 +97,7 @@
 | 空数组参数 | 已实现 | 仍作为参数绑定 |
 | `u.Tags.Any()` | 已实现 | `cardinality(u.tags) > 0` |
 | `u.Tags.Any(t => t == value)` | 已实现 | `$1 = ANY(u.tags)` |
-| `u.Tags.All(...)` | 计划支持 | `NOT EXISTS` 或数组运算 |
+| `u.Tags.All(t => t == value)` | 已实现基础版 | `NOT EXISTS (SELECT 1 FROM unnest(u.tags) ... IS DISTINCT FROM $1)` |
 | 多维数组 | 暂不支持 | 后置 |
 
 ## 6. JSONB
@@ -152,11 +152,11 @@
 | `GroupBy(...).Select(g => new { g.Key, Count = g.Count() })` | 已实现 SQL 预览 | `GROUP BY`, `count(*)` |
 | `Sum/Min/Max/Average` | 已实现 SQL 预览 | 聚合函数 |
 | 多 key group | 已实现基础版 | 多列 `GROUP BY`，支持 DTO/匿名类型投影 |
-| 聚合投影后的 `Where/OrderBy/Skip/Take` | 已实现 SQL 预览 | 使用聚合子查询包装，语义等价常见 `HAVING`/聚合排序场景 |
-| 原生 `HAVING` 关键字输出 | 计划支持 | `HAVING` |
+| 聚合投影后的 `Where/OrderBy/Skip/Take` | 已实现 SQL 预览 | 简单 `Where` 输出 `HAVING`；带排序/分页时使用聚合子查询包装 |
+| 原生 `HAVING` 关键字输出 | 已实现基础版 | `GROUP BY ... HAVING ...` |
 | `CountDistinct/LongCountDistinct` | 已实现基础版 | `count(distinct ...)` |
-| `array_agg` | 计划支持 | PostgreSQL 聚合 |
-| `jsonb_agg` | 计划支持 | PostgreSQL 聚合 |
+| `ArrayAgg(selector)` | 已实现基础版 | `array_agg(column)` |
+| `JsonbAgg(selector)` | 已实现基础版 | `jsonb_agg(column)::text` |
 | 完整 `IGrouping<TKey,T>` materialization | 暂不支持 | 结果形状不直接等价 SQL |
 
 ## 10. 原生 SQL
@@ -170,7 +170,7 @@
 
 ## 11. 当前测试数量
 
-截至本文档日期，当前测试数量为 125 个，其中包含 99 个单元/SQL 快照测试和 26 个 Docker PostgreSQL 集成测试，覆盖：
+截至本文档日期，当前测试数量为 132 个，其中包含 103 个单元/SQL 快照测试和 29 个 Docker PostgreSQL 集成测试，覆盖：
 
 - 默认映射和特性映射。
 - 标识符引用和命名约定。
@@ -186,6 +186,7 @@
 - Distinct 标量投影 SQL 和真实 PostgreSQL 执行。
 - 数组运算。
 - 数组 Any 无谓词和等值谓词。
+- 数组 All 等值谓词 SQL 和真实 PostgreSQL 执行。
 - JSONB 运算。
 - JSONB path exists SQL 和真实 PostgreSQL 执行。
 - Insert/Update/Delete SQL。
@@ -201,6 +202,8 @@
 - GroupBy Count 聚合 SQL 预览。
 - GroupBy 多 key、MemberInit DTO 投影 SQL 预览和真实 PostgreSQL 执行。
 - GroupBy CountDistinct SQL 和真实 PostgreSQL 执行。
+- GroupBy ArrayAgg/JsonbAgg SQL 和真实 PostgreSQL 执行。
+- GroupBy 简单聚合过滤 HAVING SQL 和真实 PostgreSQL 执行。
 - GroupBy 聚合投影后 Where/OrderBy/Skip/Take SQL 预览。
 - materializer 基础数值类型转换。
 - Docker PostgreSQL 下的 insert returning、实体查询、数组查询、JSONB 查询、update、delete。

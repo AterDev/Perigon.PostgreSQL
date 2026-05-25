@@ -7,13 +7,14 @@ namespace Perigon.PostgreSQL.Metadata;
 
 public sealed class EntityModel
 {
-    private EntityModel(Type clrType, string? schema, string tableName, IReadOnlyList<ColumnModel> columns)
+    private EntityModel(Type clrType, string? schema, string tableName, IReadOnlyList<ColumnModel> columns, bool isGenerated)
     {
         ClrType = clrType;
         Schema = schema;
         TableName = tableName;
         Columns = columns;
         PrimaryKey = columns.FirstOrDefault(c => c.IsPrimaryKey);
+        IsGenerated = isGenerated;
     }
 
     public Type ClrType { get; }
@@ -25,6 +26,8 @@ public sealed class EntityModel
     public IReadOnlyList<ColumnModel> Columns { get; }
 
     public ColumnModel? PrimaryKey { get; }
+
+    public bool IsGenerated { get; }
 
     public string StoreObjectName => Identifier.Qualify(Schema, TableName);
 
@@ -43,7 +46,18 @@ public sealed class EntityModel
     public static EntityModel For(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
     {
+        if (EntityModelRegistry.TryGet(entityType, out var generated))
+        {
+            return generated;
+        }
+
         return Build(entityType);
+    }
+
+    public static EntityModel CreateGenerated<T>(string? schema, string tableName, IReadOnlyList<ColumnModel> columns)
+        where T : class
+    {
+        return new EntityModel(typeof(T), schema, tableName, columns, isGenerated: true);
     }
 
     private static EntityModel Build(
@@ -74,7 +88,7 @@ public sealed class EntityModel
                 column?.IsArray == true || IsArrayLike(property.PropertyType)));
         }
 
-        return new EntityModel(entityType, schema, tableName, columns);
+        return new EntityModel(entityType, schema, tableName, columns, isGenerated: false);
     }
 
     private static bool IsInteger(Type type)

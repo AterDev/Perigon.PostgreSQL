@@ -25,6 +25,16 @@ internal static class CommandExecutor
         await using var command = context.CreateCommand(sql);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var results = new List<T>();
+        if (EntityMaterializerRegistry.TryGet<T>(out var generatedMaterializer))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                results.Add(generatedMaterializer(reader));
+            }
+
+            return results;
+        }
+
         var ordinals = BuildOrdinals(reader, model);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {

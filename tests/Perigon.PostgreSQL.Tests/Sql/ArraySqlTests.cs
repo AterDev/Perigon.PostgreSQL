@@ -72,4 +72,17 @@ public sealed class ArraySqlTests
         Assert.Contains("$1 = ANY(e.\"tags\")", sql.CommandText);
         Assert.Equal(tag, sql.Parameters[0].Value);
     }
+
+    [Fact]
+    public void Array_all_equality_predicate_translates_to_not_exists_unnest()
+    {
+        using var db = new TestDbContext();
+        var tag = "postgres";
+
+        var sql = db.RichUsers.Where(u => u.Tags!.All(t => t == tag)).ToQuerySql();
+
+        Assert.Contains("e.\"tags\" IS NOT NULL", sql.CommandText);
+        Assert.Contains("NOT EXISTS (SELECT 1 FROM unnest(e.\"tags\") AS p(\"value\") WHERE p.\"value\" IS DISTINCT FROM $1)", sql.CommandText);
+        Assert.Equal(tag, sql.Parameters[0].Value);
+    }
 }

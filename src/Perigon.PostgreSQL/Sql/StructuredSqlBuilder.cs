@@ -86,6 +86,11 @@ internal static class StructuredSqlBuilder
         }
 
         var selector = UnquoteLambda(selectCall.Arguments[1]);
+        if (TryBuildGroupByHavingQuery(groupBy, selector, query, out sql))
+        {
+            return true;
+        }
+
         var inner = BuildGroupBy(groupBy, selector);
         var parameters = new ParameterBag(inner.Parameters);
         var translator = new ProjectedSqlExpressionTranslator(parameters, "g");
@@ -114,6 +119,25 @@ internal static class StructuredSqlBuilder
         }
 
         sql = new BoundSql(commandText, parameters.Parameters);
+        return true;
+    }
+
+    private static bool TryBuildGroupByHavingQuery(
+        MethodCallExpression groupBy,
+        LambdaExpression selector,
+        PostProjectionQuery query,
+        [NotNullWhen(true)] out BoundSql? sql)
+    {
+        if (query.Predicates.Count == 0 || query.Orderings.Count > 0 || query.Take is not null || query.Skip is not null)
+        {
+            sql = null;
+            return false;
+        }
+
+        var groupQuery = BuildGroupByQuery(groupBy, selector);
+        var translator = new ProjectedSqlExpressionTranslator(groupQuery.Parameters, projectionSql: groupQuery.ProjectionSql);
+        var commandText = groupQuery.CommandText + " HAVING " + string.Join(" AND ", query.Predicates.Select(translator.TranslatePredicate));
+        sql = new BoundSql(commandText, groupQuery.Parameters.Parameters);
         return true;
     }
 
@@ -300,6 +324,12 @@ internal static class StructuredSqlBuilder
 
     private static BoundSql BuildGroupBy(MethodCallExpression groupBy, LambdaExpression selector)
     {
+        var result = BuildGroupByQuery(groupBy, selector);
+        return new BoundSql(result.CommandText, result.Parameters.Parameters);
+    }
+
+    private static GroupByBuildResult BuildGroupByQuery(MethodCallExpression groupBy, LambdaExpression selector)
+    {
         var sourceExpression = groupBy.Arguments[0];
         var entityType = FindRootEntityType(sourceExpression);
         var model = EntityModel.For(entityType);
@@ -308,11 +338,14 @@ internal static class StructuredSqlBuilder
         const string alias = "e";
         var keySql = ReadGroupKeySql(keySelector.Body, keySelector.Parameters[0], model, alias);
         var selections = ReadGroupSelections(selector.Body, selector.Parameters[0], keySql, model, alias);
-        var sql = $"SELECT {string.Join(", ", selections)} FROM {model.StoreObjectName} AS {alias}";
+        var sql = $"SELECT {string.Join(", ", selections.Select(s => $"{s.Sql} AS {Identifier.Quote(s.OutputName)}"))} FROM {model.StoreObjectName} AS {alias}";
         var queryModel = QueryModelFactory.Create(sourceExpression);
         AppendWhereAndOrder(model, queryModel, parameters, alias, ref sql, appendOrder: false);
         sql += $" GROUP BY {string.Join(", ", keySql.Columns)}";
-        return new BoundSql(sql, parameters.Parameters);
+        return new GroupByBuildResult(
+            sql,
+            parameters,
+            selections.ToDictionary(s => s.OutputName, s => s.Sql, StringComparer.Ordinal));
     }
 
     private static void AppendWhereAndOrder(
@@ -465,7 +498,7 @@ internal static class StructuredSqlBuilder
         return new GroupKeySql([keySql], new Dictionary<string, string>(StringComparer.Ordinal));
     }
 
-    private static IReadOnlyList<string> ReadGroupSelections(
+    private static IReadOnlyList<GroupProjection> ReadGroupSelections(
         Expression body,
         ParameterExpression groupParameter,
         GroupKeySql keySql,
@@ -496,7 +529,7 @@ internal static class StructuredSqlBuilder
             .ToArray();
     }
 
-    private static string GroupSelection(
+    private static GroupProjection GroupSelection(
         Expression argument,
         string outputName,
         ParameterExpression groupParameter,
@@ -513,7 +546,7 @@ internal static class StructuredSqlBuilder
                 throw new UnsupportedQueryExpressionException("Project individual key members for multi-key GroupBy.");
             }
 
-            return $"{keySql.Columns[0]} AS {Identifier.Quote(outputName)}";
+            return new GroupProjection(outputName, keySql.Columns[0]);
         }
 
         if (argument is MemberExpression keyMember &&
@@ -521,12 +554,12 @@ internal static class StructuredSqlBuilder
             keyTarget == groupParameter &&
             keySql.NamedColumns.TryGetValue(keyMember.Member.Name, out var keyColumn))
         {
-            return $"{keyColumn} AS {Identifier.Quote(outputName)}";
+            return new GroupProjection(outputName, keyColumn);
         }
 
         if (argument is MethodCallExpression aggregate)
         {
-            return $"{TranslateAggregate(aggregate, model, alias)} AS {Identifier.Quote(outputName)}";
+            return new GroupProjection(outputName, TranslateAggregate(aggregate, model, alias));
         }
 
         throw new UnsupportedQueryExpressionException($"GroupBy projection '{argument}' is not supported.");
@@ -541,6 +574,20 @@ internal static class StructuredSqlBuilder
             var lambda = UnquoteLambda(aggregate.Arguments[1]);
             var memberSql = TranslateSingleMember(lambda.Body, lambda.Parameters[0], model, alias);
             return $"count(distinct {memberSql})";
+        }
+
+        if (aggregate.Method.Name == nameof(PostgresAggregateExtensions.ArrayAgg) && aggregate.Arguments.Count == 2)
+        {
+            var lambda = UnquoteLambda(aggregate.Arguments[1]);
+            var memberSql = TranslateSingleMember(lambda.Body, lambda.Parameters[0], model, alias);
+            return $"array_agg({memberSql})";
+        }
+
+        if (aggregate.Method.Name == nameof(PostgresAggregateExtensions.JsonbAgg) && aggregate.Arguments.Count == 2)
+        {
+            var lambda = UnquoteLambda(aggregate.Arguments[1]);
+            var memberSql = TranslateSingleMember(lambda.Body, lambda.Parameters[0], model, alias);
+            return $"jsonb_agg({memberSql})::text";
         }
 
         var functionName = aggregate.Method.Name switch
@@ -617,17 +664,29 @@ internal static class StructuredSqlBuilder
         IReadOnlyList<string> Columns,
         IReadOnlyDictionary<string, string> NamedColumns);
 
+    private sealed record GroupProjection(string OutputName, string Sql);
+
+    private sealed record GroupByBuildResult(
+        string CommandText,
+        ParameterBag Parameters,
+        IReadOnlyDictionary<string, string> ProjectionSql);
+
     private sealed class ProjectedSqlExpressionTranslator : ExpressionVisitor
     {
         private readonly ParameterBag _parameters;
         private readonly string _alias;
+        private readonly IReadOnlyDictionary<string, string>? _projectionSql;
         private readonly Stack<string> _sql = new();
         private ParameterExpression? _projectionParameter;
 
-        public ProjectedSqlExpressionTranslator(ParameterBag parameters, string alias)
+        public ProjectedSqlExpressionTranslator(
+            ParameterBag parameters,
+            string alias = "g",
+            IReadOnlyDictionary<string, string>? projectionSql = null)
         {
             _parameters = parameters;
             _alias = alias;
+            _projectionSql = projectionSql;
         }
 
         public string TranslatePredicate(LambdaExpression expression)
@@ -702,7 +761,15 @@ internal static class StructuredSqlBuilder
         {
             if (node.Expression == _projectionParameter)
             {
-                _sql.Push($"{_alias}.{Identifier.Quote(node.Member.Name)}");
+                if (_projectionSql is not null && _projectionSql.TryGetValue(node.Member.Name, out var projectionSql))
+                {
+                    _sql.Push(projectionSql);
+                }
+                else
+                {
+                    _sql.Push($"{_alias}.{Identifier.Quote(node.Member.Name)}");
+                }
+
                 return node;
             }
 

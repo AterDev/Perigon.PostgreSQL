@@ -1,4 +1,6 @@
 using Perigon.PostgreSQL;
+using Perigon.PostgreSQL.Execution;
+using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.RawSql;
 using Perigon.PostgreSQL.Update;
 
@@ -19,6 +21,10 @@ public sealed class CrudIntegrationTests
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
         var createdAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        Assert.True(EntityModel.For<IntegrationUser>().IsGenerated);
+        Assert.True(EntityMaterializerRegistry.TryGet<IntegrationUser>(out _));
+    Assert.True(EntityValueAccessorRegistry.TryGetAccessor(typeof(IntegrationUser), nameof(IntegrationUser.UserName), out _));
 
         var inserted = await db.IntegrationUsers.InsertAsync(new IntegrationUser
         {
@@ -168,6 +174,52 @@ public sealed class CrudIntegrationTests
             .ToListAsync();
 
         Assert.Contains(users, u => u.UserName == "String-Alice");
+    }
+
+    [Fact]
+    public async Task Array_all_equality_predicate_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "Array-All-Match",
+                Age = 36,
+                IsActive = true,
+                Status = "array-all",
+                CreatedAt = new DateTime(2026, 1, 15, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["same", "same"],
+                ProfileJson = """{"arrayAll":true}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Array-All-Empty",
+                Age = 37,
+                IsActive = true,
+                Status = "array-all",
+                CreatedAt = new DateTime(2026, 1, 16, 0, 0, 0, DateTimeKind.Utc),
+                Tags = [],
+                ProfileJson = """{"arrayAll":true}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Array-All-Miss",
+                Age = 38,
+                IsActive = true,
+                Status = "array-all",
+                CreatedAt = new DateTime(2026, 1, 17, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["same", "other"],
+                ProfileJson = """{"arrayAll":false}"""
+            }
+        ]);
+
+        var users = await db.IntegrationUsers
+            .Where(u => u.Status == "array-all" && u.Tags!.All(t => t == "same"))
+            .OrderBy(u => u.UserName)
+            .ToListAsync();
+
+        Assert.Equal(["Array-All-Empty", "Array-All-Match"], users.Select(u => u.UserName).ToArray());
     }
 
     [Fact]
