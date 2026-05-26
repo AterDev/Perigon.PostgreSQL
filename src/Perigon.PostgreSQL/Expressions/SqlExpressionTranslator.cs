@@ -281,7 +281,7 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             var valueExpression = node.Object is null ? node.Arguments[1] : node.Arguments[0];
             Visit(source);
             var column = _sql.Pop();
-            _sql.Push($"{column} @> {_parameters.Add(ExpressionValueReader.Read(valueExpression))}");
+            _sql.Push($"{column} @> ({_parameters.Add(ExpressionValueReader.Read(valueExpression))})::jsonb");
             return node;
         }
 

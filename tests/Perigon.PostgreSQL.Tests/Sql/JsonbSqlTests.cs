@@ -11,7 +11,7 @@ public sealed class JsonbSqlTests
 
         var sql = db.RichUsers.Where(u => u.ProfileJson.JsonbContains("""{"level":3}""")).ToQuerySql();
 
-        Assert.Contains("e.\"profile_json\" @> $1", sql.CommandText);
+        Assert.Contains("e.\"profile_json\" @> ($1)::jsonb", sql.CommandText);
         Assert.Equal("""{"level":3}""", sql.Parameters[0].Value);
     }
 

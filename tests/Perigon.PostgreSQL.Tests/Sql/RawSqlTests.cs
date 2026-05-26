@@ -41,4 +41,28 @@ public sealed class RawSqlTests
         Assert.Equal("select * from users where name = $1", sql.CommandText);
         Assert.Equal(payload, sql.Parameters[0].Value);
     }
+
+    [Fact]
+    public void Raw_sql_command_without_parameters_keeps_text()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.SqlCommand($"vacuum").ToBoundSql();
+
+        Assert.Equal("vacuum", sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
+
+    [Fact]
+    public void Raw_sql_query_preserves_argument_order_with_repeated_values()
+    {
+        using var db = new TestDbContext();
+        var status = "active";
+        var minAge = 18;
+
+        var sql = db.SqlQuery<RichUser>($"select * from users where status = {status} or backup_status = {status} and age >= {minAge}").ToBoundSql();
+
+        Assert.Equal("select * from users where status = $1 or backup_status = $2 and age >= $3", sql.CommandText);
+        Assert.Equal([status, status, minAge], sql.Parameters.Select(p => p.Value).ToArray());
+    }
 }

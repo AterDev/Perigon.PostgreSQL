@@ -2,7 +2,7 @@ using Perigon.PostgreSQL;
 
 namespace Perigon.PostgreSQL.IntegrationTests;
 
-public sealed class IntegrationDbContext : PostgresDbContext
+public sealed class IntegrationDbContext : DbContext
 {
     public IntegrationDbContext(string connectionString)
         : base(builder => builder.UsePostgres(connectionString))

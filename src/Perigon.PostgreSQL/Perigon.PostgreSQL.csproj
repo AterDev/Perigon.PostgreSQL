@@ -7,6 +7,20 @@
     <IsAotCompatible>true</IsAotCompatible>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <PackageId>Perigon.PostgreSQL</PackageId>
+    <Title>Perigon.PostgreSQL</Title>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <Authors>AterDev</Authors>
+    <Company>AterDev</Company>
+    <Description>PostgreSQL-only NativeAOT-friendly data access library with deterministic SQL, LINQ translation, no change tracking, source generation, and PostgreSQL-native features.</Description>
+    <PackageTags>postgresql;npgsql;nativeaot;linq;sql;jsonb;bulk;aspnetcore</PackageTags>
+    <PackageProjectUrl>https://github.com/AterDev/Perigon.PostgreSQL</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/AterDev/Perigon.PostgreSQL.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageIcon>perigon_logo.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>Preview 2 expands real PostgreSQL integration coverage, adds raw SQL and source generator unit tests, and fixes JSONB containment SQL casting. See RELEASE_NOTES.md for details.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,8 +30,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+    <None Include="..\..\RELEASE_NOTES.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\perigon_logo.png" Pack="true" PackagePath="\" Visible="false" />
     <ProjectReference Include="..\Perigon.PostgreSQL.SourceGeneration\Perigon.PostgreSQL.SourceGeneration.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\Perigon.PostgreSQL.Analyzers\Perigon.PostgreSQL.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
     <None Include="..\Perigon.PostgreSQL.SourceGeneration\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.SourceGeneration.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" Condition="Exists('..\Perigon.PostgreSQL.SourceGeneration\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.SourceGeneration.dll')" />
+    <None Include="..\Perigon.PostgreSQL.Analyzers\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.Analyzers.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" Condition="Exists('..\Perigon.PostgreSQL.Analyzers\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.Analyzers.dll')" />
   </ItemGroup>
 
 </Project>

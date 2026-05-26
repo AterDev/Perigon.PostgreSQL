@@ -52,7 +52,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             type.IsAbstract ||
             type.IsGenericType ||
             !IsAccessibleFromGeneratedCode(type) ||
-            InheritsFrom(type, "Perigon.PostgreSQL.PostgresDbContext") ||
+            InheritsFrom(type, "Perigon.PostgreSQL.DbContext") ||
             !HasPublicParameterlessConstructor(type))
         {
             return null;

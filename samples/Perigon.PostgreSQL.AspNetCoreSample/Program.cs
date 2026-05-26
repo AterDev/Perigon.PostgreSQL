@@ -10,7 +10,7 @@ builder.Services.AddOpenApi();
 
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
     ?? "Host=localhost;Port=5432;Database=perigon_sample;Username=postgres;Password=postgres";
-builder.Services.AddScoped(_ => new SampleDbContext(connectionString));
+builder.Services.AddDbContext(_ => new SampleDbContext(connectionString));
 
 var app = builder.Build();
 await SampleDatabase.InitializeAsync(connectionString);

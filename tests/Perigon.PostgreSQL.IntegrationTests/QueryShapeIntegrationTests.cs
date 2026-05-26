@@ -59,6 +59,166 @@ public sealed class QueryShapeIntegrationTests
     }
 
     [Fact]
+    public async Task Left_join_projection_preserves_rows_without_matches()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var withBlog = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "LeftJoin-WithBlog",
+            Age = 35,
+            IsActive = true,
+            Status = "left-join",
+            CreatedAt = new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["left-join"],
+            ProfileJson = """{"leftJoin":"with-blog"}"""
+        });
+
+        _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "LeftJoin-NoBlog",
+            Age = 36,
+            IsActive = true,
+            Status = "left-join",
+            CreatedAt = new DateTime(2026, 4, 18, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["left-join"],
+            ProfileJson = """{"leftJoin":"no-blog"}"""
+        });
+
+        _ = await db.IntegrationBlogs.InsertAsync(new IntegrationBlog
+        {
+            IntegrationUserId = withBlog.Id,
+            Name = "Left Join Blog",
+            IsPublic = true,
+            CreatedAt = new DateTime(2026, 4, 19, 0, 0, 0, DateTimeKind.Utc)
+        });
+
+        var rows = await db.IntegrationUsers
+            .Where(u => u.Status == "left-join")
+            .OrderBy(u => u.UserName)
+            .GroupJoin(
+                db.IntegrationBlogs.Where(b => b.IsPublic),
+                u => u.Id,
+                b => b.IntegrationUserId,
+                (u, blogs) => new { u, blogs })
+            .SelectMany(
+                x => x.blogs.DefaultIfEmpty(),
+                (x, b) => new IntegrationLeftJoinRow
+                {
+                    UserName = x.u.UserName,
+                    BlogName = b!.Name
+                })
+            .ToListAsync();
+
+        Assert.Equal(2, rows.Count);
+        Assert.Contains(rows, row => row.UserName == "LeftJoin-WithBlog" && row.BlogName == "Left Join Blog");
+        Assert.Contains(rows, row => row.UserName == "LeftJoin-NoBlog" && row.BlogName is null);
+    }
+
+    [Fact]
+    public async Task Ordered_paging_projection_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "Paging-A",
+                Age = 21,
+                IsActive = true,
+                Status = "paging",
+                CreatedAt = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["paging"],
+                ProfileJson = """{"paging":1}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Paging-B",
+                Age = 24,
+                IsActive = true,
+                Status = "paging",
+                CreatedAt = new DateTime(2026, 4, 21, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["paging"],
+                ProfileJson = """{"paging":2}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Paging-C",
+                Age = 24,
+                IsActive = true,
+                Status = "paging",
+                CreatedAt = new DateTime(2026, 4, 22, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["paging"],
+                ProfileJson = """{"paging":3}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Paging-D",
+                Age = 29,
+                IsActive = true,
+                Status = "paging",
+                CreatedAt = new DateTime(2026, 4, 23, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["paging"],
+                ProfileJson = """{"paging":4}"""
+            }
+        ]);
+
+        var names = await db.IntegrationUsers
+            .Where(u => u.Status == "paging")
+            .OrderByDescending(u => u.Age)
+            .ThenBy(u => u.UserName)
+            .Skip(1)
+            .Take(2)
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        Assert.Equal(["Paging-B", "Paging-C"], names);
+    }
+
+    [Fact]
+    public async Task Null_filter_projection_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "NullFilter-Null",
+                Age = 33,
+                IsActive = true,
+                Status = "null-filter",
+                CreatedAt = new DateTime(2026, 4, 24, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedAt = null,
+                Tags = ["null-filter"],
+                ProfileJson = """{"updated":null}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "NullFilter-Set",
+                Age = 34,
+                IsActive = true,
+                Status = "null-filter",
+                CreatedAt = new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedAt = new DateTime(2026, 4, 26, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["null-filter"],
+                ProfileJson = """{"updated":"set"}"""
+            }
+        ]);
+
+        var pending = await db.IntegrationUsers
+            .Where(u => u.Status == "null-filter" && u.UpdatedAt == null)
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        var updated = await db.IntegrationUsers
+            .Where(u => u.Status == "null-filter" && u.UpdatedAt != null)
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        Assert.Equal(["NullFilter-Null"], pending);
+        Assert.Equal(["NullFilter-Set"], updated);
+    }
+
+    [Fact]
     public async Task Multi_key_group_by_projection_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);

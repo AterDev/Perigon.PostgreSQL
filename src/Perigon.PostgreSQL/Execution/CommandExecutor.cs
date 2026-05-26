@@ -7,7 +7,7 @@ namespace Perigon.PostgreSQL.Execution;
 internal static class CommandExecutor
 {
     public static async Task<int> ExecuteNonQueryAsync(
-        PostgresDbContext context,
+        DbContext context,
         BoundSql sql,
         CancellationToken cancellationToken)
     {
@@ -16,7 +16,7 @@ internal static class CommandExecutor
     }
 
     public static async Task<List<T>> ExecuteQueryAsync<T>(
-        PostgresDbContext context,
+        DbContext context,
         EntityModel model,
         BoundSql sql,
         CancellationToken cancellationToken)
@@ -105,7 +105,7 @@ internal static class CommandExecutor
     }
 
     public static async Task<T> ExecuteScalarAsync<T>(
-        PostgresDbContext context,
+        DbContext context,
         BoundSql sql,
         CancellationToken cancellationToken)
     {
@@ -121,7 +121,7 @@ internal static class CommandExecutor
     }
 
     public static async Task<List<T>> ExecuteScalarListAsync<T>(
-        PostgresDbContext context,
+        DbContext context,
         BoundSql sql,
         CancellationToken cancellationToken)
     {

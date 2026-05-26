@@ -9,7 +9,7 @@ public sealed class DbSet<T> : IOrderedQueryable<T> where T : class
 {
     private readonly PostgresQueryProvider _provider;
 
-    internal DbSet(PostgresDbContext context, EntityModel model)
+    internal DbSet(DbContext context, EntityModel model)
     {
         Context = context;
         Model = model;
@@ -17,7 +17,7 @@ public sealed class DbSet<T> : IOrderedQueryable<T> where T : class
         _provider = new PostgresQueryProvider(context);
     }
 
-    internal DbSet(PostgresDbContext context, EntityModel model, Expression expression)
+    internal DbSet(DbContext context, EntityModel model, Expression expression)
     {
         Context = context;
         Model = model;
@@ -25,7 +25,7 @@ public sealed class DbSet<T> : IOrderedQueryable<T> where T : class
         _provider = new PostgresQueryProvider(context);
     }
 
-    public PostgresDbContext Context { get; }
+    public DbContext Context { get; }
 
     public EntityModel Model { get; }
 

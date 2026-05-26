@@ -3,7 +3,7 @@ using Perigon.PostgreSQL.Tests.Models;
 
 namespace Perigon.PostgreSQL.Tests;
 
-public sealed class TestDbContext : PostgresDbContext
+public sealed class TestDbContext : DbContext
 {
     public DbSet<ConventionUser> ConventionUsers => Set<ConventionUser>();
 

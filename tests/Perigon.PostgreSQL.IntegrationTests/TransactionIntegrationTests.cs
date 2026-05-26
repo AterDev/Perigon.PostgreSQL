@@ -59,6 +59,40 @@ public sealed class TransactionIntegrationTests
     }
 
     [Fact]
+    public async Task Transaction_rolls_back_all_changes_on_database_error()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            db.TransactionAsync(async ct =>
+            {
+                _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+                {
+                    UserName = "Tx-DbError",
+                    Age = 31,
+                    IsActive = true,
+                    Status = "tx-db-error",
+                    CreatedAt = new DateTime(2026, 2, 5, 0, 0, 0, DateTimeKind.Utc),
+                    Tags = ["tx", "db-error"],
+                    ProfileJson = """{"tx":"db-error-1"}"""
+                }, ct);
+
+                _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+                {
+                    UserName = "Tx-DbError",
+                    Age = 32,
+                    IsActive = false,
+                    Status = "tx-db-error",
+                    CreatedAt = new DateTime(2026, 2, 6, 0, 0, 0, DateTimeKind.Utc),
+                    Tags = ["tx", "db-error"],
+                    ProfileJson = """{"tx":"db-error-2"}"""
+                }, ct);
+            }));
+
+        Assert.False(await db.IntegrationUsers.Where(u => u.Status == "tx-db-error").AnyAsync());
+    }
+
+    [Fact]
     public async Task Nested_transaction_is_rejected()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
@@ -98,5 +132,49 @@ public sealed class TransactionIntegrationTests
         await db.TransactionAsync(ct => db.IntegrationUsers.BulkInsertAsync(rows, cancellationToken: ct));
 
         Assert.True(await db.IntegrationUsers.Where(u => u.Status == "tx-copy").CountAsync() >= 2);
+    }
+
+    [Fact]
+    public async Task Transaction_can_commit_multiple_write_operations_atomically()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var keep = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Tx-Atomic-Keep",
+            Age = 26,
+            IsActive = true,
+            Status = "tx-atomic-before",
+            CreatedAt = new DateTime(2026, 2, 7, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["tx", "atomic"],
+            ProfileJson = """{"tx":"keep"}"""
+        });
+
+        var remove = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Tx-Atomic-Remove",
+            Age = 27,
+            IsActive = true,
+            Status = "tx-atomic-before",
+            CreatedAt = new DateTime(2026, 2, 8, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["tx", "atomic"],
+            ProfileJson = """{"tx":"remove"}"""
+        });
+
+        await db.TransactionAsync(async ct =>
+        {
+            _ = await db.IntegrationUsers
+                .Where(u => u.Id == keep.Id)
+                .ExecuteUpdateAsync(s => s.Set(u => u.Status, "tx-atomic-after"), options: null, cancellationToken: ct);
+
+            _ = await db.IntegrationUsers
+                .Where(u => u.Id == remove.Id)
+                .ExecuteDeleteAsync(options: null, cancellationToken: ct);
+        });
+
+        var kept = await db.IntegrationUsers.Where(u => u.Id == keep.Id).ToListAsync();
+        var deleted = await db.IntegrationUsers.Where(u => u.Id == remove.Id).ToListAsync();
+
+        Assert.Equal("tx-atomic-after", kept.Single().Status);
+        Assert.Empty(deleted);
     }
 }

@@ -262,7 +262,7 @@ public static class PostgresQueryableExtensions
         return CommandExecutor.ExecuteNonQueryAsync(set.Context, set.ToUpsertSql(rows, conflictKey, options), cancellationToken);
     }
 
-    private static PostgresDbContext GetContext<T>(IQueryable<T> source)
+    private static DbContext GetContext<T>(IQueryable<T> source)
     {
         if (source.Provider is PostgresQueryProvider provider)
         {

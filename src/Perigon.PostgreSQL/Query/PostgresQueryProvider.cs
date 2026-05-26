@@ -4,12 +4,12 @@ namespace Perigon.PostgreSQL.Query;
 
 internal sealed class PostgresQueryProvider : IQueryProvider
 {
-    public PostgresQueryProvider(PostgresDbContext context)
+    public PostgresQueryProvider(DbContext context)
     {
         Context = context;
     }
 
-    public PostgresDbContext Context { get; }
+    public DbContext Context { get; }
 
     public IQueryable CreateQuery(Expression expression)
     {

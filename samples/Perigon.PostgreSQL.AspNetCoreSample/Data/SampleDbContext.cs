@@ -3,7 +3,7 @@ using Perigon.PostgreSQL.AspNetCoreSample.Models;
 
 namespace Perigon.PostgreSQL.AspNetCoreSample.Data;
 
-public sealed class SampleDbContext : PostgresDbContext
+public sealed class SampleDbContext : DbContext
 {
     public SampleDbContext(string connectionString)
         : base(builder => builder.UsePostgres(connectionString))

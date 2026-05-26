@@ -105,6 +105,48 @@ public sealed class CrudIntegrationTests
     }
 
     [Fact]
+    public async Task Jsonb_contains_and_has_key_execute_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "Jsonb-Contains",
+                Age = 26,
+                IsActive = true,
+                Status = "jsonb-operators",
+                CreatedAt = new DateTime(2026, 1, 18, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["jsonb"],
+                ProfileJson = """{"level":3,"name":"Jsonb-Contains","team":"platform"}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Jsonb-Miss",
+                Age = 27,
+                IsActive = true,
+                Status = "jsonb-operators",
+                CreatedAt = new DateTime(2026, 1, 19, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["jsonb"],
+                ProfileJson = """{"name":"Jsonb-Miss"}"""
+            }
+        ]);
+
+        var contains = await db.IntegrationUsers
+            .Where(u => u.Status == "jsonb-operators" && u.ProfileJson.JsonbContains("""{"level":3}"""))
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        var hasKey = await db.IntegrationUsers
+            .Where(u => u.Status == "jsonb-operators" && u.ProfileJson.JsonbHasKey("team"))
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        Assert.Equal(["Jsonb-Contains"], contains);
+        Assert.Equal(["Jsonb-Contains"], hasKey);
+    }
+
+    [Fact]
     public async Task Count_and_any_execute_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
@@ -223,6 +265,75 @@ public sealed class CrudIntegrationTests
     }
 
     [Fact]
+    public async Task Array_operators_execute_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var requiredTags = new[] { "postgres", "aot" };
+        var allowedTags = new[] { "postgres", "aot", "linq" };
+        var overlappingTags = new[] { "aot", "missing" };
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "Array-Operators-Full",
+                Age = 39,
+                IsActive = true,
+                Status = "array-operators",
+                CreatedAt = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["postgres", "aot", "linq"],
+                ProfileJson = """{"arrayOps":"full"}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Array-Operators-Subset",
+                Age = 40,
+                IsActive = true,
+                Status = "array-operators",
+                CreatedAt = new DateTime(2026, 1, 21, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["postgres"],
+                ProfileJson = """{"arrayOps":"subset"}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Array-Operators-Other",
+                Age = 41,
+                IsActive = true,
+                Status = "array-operators",
+                CreatedAt = new DateTime(2026, 1, 22, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["other"],
+                ProfileJson = """{"arrayOps":"other"}"""
+            }
+        ]);
+
+        var containsAll = await db.IntegrationUsers
+            .Where(u => u.Status == "array-operators" && u.Tags!.ContainsAll(requiredTags))
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        var containedBy = await db.IntegrationUsers
+            .Where(u => u.Status == "array-operators" && u.Tags!.IsContainedBy(allowedTags))
+            .OrderBy(u => u.UserName)
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        var overlaps = await db.IntegrationUsers
+            .Where(u => u.Status == "array-operators" && u.Tags!.Overlaps(overlappingTags))
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        var nonEmpty = await db.IntegrationUsers
+            .Where(u => u.Status == "array-operators" && u.Tags!.Any() && u.Tags!.Length > 1)
+            .OrderBy(u => u.UserName)
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        Assert.Equal(["Array-Operators-Full"], containsAll);
+        Assert.Equal(["Array-Operators-Full", "Array-Operators-Subset"], containedBy);
+        Assert.Equal(["Array-Operators-Full"], overlaps);
+        Assert.Equal(["Array-Operators-Full"], nonEmpty);
+    }
+
+    [Fact]
     public async Task Bulk_insert_copy_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
@@ -324,6 +435,45 @@ public sealed class CrudIntegrationTests
     }
 
     [Fact]
+    public async Task Upsert_many_can_do_nothing_on_conflict_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Upsert-DoNothing",
+            Age = 44,
+            IsActive = true,
+            Status = "upsert-existing",
+            CreatedAt = new DateTime(2026, 1, 23, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["upsert", "existing"],
+            ProfileJson = """{"version":1}"""
+        });
+
+        var affected = await db.IntegrationUsers.UpsertManyAsync(
+            [
+                new IntegrationUser
+                {
+                    UserName = "Upsert-DoNothing",
+                    Age = 99,
+                    IsActive = false,
+                    Status = "upsert-new",
+                    CreatedAt = new DateTime(2026, 1, 24, 0, 0, 0, DateTimeKind.Utc),
+                    Tags = ["upsert", "new"],
+                    ProfileJson = """{"version":2}"""
+                }
+            ],
+            u => u.UserName,
+            new Perigon.PostgreSQL.Bulk.UpsertOptions<IntegrationUser> { DoNothing = true });
+
+        var after = await db.IntegrationUsers.Where(u => u.UserName == "Upsert-DoNothing").ToListAsync();
+        var user = Assert.Single(after);
+
+        Assert.Equal(0, affected);
+        Assert.Equal(44, user.Age);
+        Assert.Equal("upsert-existing", user.Status);
+    }
+
+    [Fact]
     public async Task Raw_sql_query_and_command_execute_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
@@ -351,6 +501,38 @@ public sealed class CrudIntegrationTests
         Assert.Equal(1, updated);
         var after = await db.IntegrationUsers.Where(u => u.UserName == "Raw-Alice").ToListAsync();
         Assert.Equal("raw-updated", after.Single().Status);
+    }
+
+    [Fact]
+    public async Task Raw_sql_parameterization_prevents_injection_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Raw-Safe",
+            Age = 30,
+            IsActive = true,
+            Status = "raw-safe",
+            CreatedAt = new DateTime(2026, 1, 25, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["raw", "safe"],
+            ProfileJson = """{"source":"safe"}"""
+        });
+
+        const string payload = "' OR 1=1 --";
+
+        var users = await db
+            .SqlQuery<IntegrationUser>($"select id, user_name, age, is_active, status, created_at, updated_at, tags, profile_json from integration_users where user_name = {payload}")
+            .ToListAsync();
+
+        var updated = await db
+            .SqlCommand($"update integration_users set status = {"injected"} where user_name = {payload}")
+            .ExecuteAsync();
+
+        var after = await db.IntegrationUsers.Where(u => u.UserName == "Raw-Safe").ToListAsync();
+
+        Assert.Empty(users);
+        Assert.Equal(0, updated);
+        Assert.Equal("raw-safe", after.Single().Status);
     }
 
     [Fact]
@@ -461,5 +643,74 @@ public sealed class CrudIntegrationTests
             .ToScalarListAsync();
 
         Assert.Equal(["Scalar-Alice"], names);
+    }
+
+    [Fact]
+    public async Task First_or_default_and_single_or_default_execute_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Single-Match",
+            Age = 42,
+            IsActive = true,
+            Status = "single-operators",
+            CreatedAt = new DateTime(2026, 1, 26, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["single"],
+            ProfileJson = """{"single":1}"""
+        });
+
+        var first = await db.IntegrationUsers
+            .Where(u => u.Status == "single-operators")
+            .OrderBy(u => u.UserName)
+            .FirstOrDefaultAsync();
+
+        var single = await db.IntegrationUsers
+            .Where(u => u.UserName == "Single-Match")
+            .SingleOrDefaultAsync();
+
+        var missing = await db.IntegrationUsers
+            .Where(u => u.UserName == "Single-Missing")
+            .SingleOrDefaultAsync();
+
+        Assert.NotNull(first);
+        Assert.Equal("Single-Match", first!.UserName);
+        Assert.NotNull(single);
+        Assert.Equal("Single-Match", single!.UserName);
+        Assert.Null(missing);
+    }
+
+    [Fact]
+    public async Task Single_or_default_throws_when_multiple_rows_match()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "Single-Multi-A",
+                Age = 45,
+                IsActive = true,
+                Status = "single-multi",
+                CreatedAt = new DateTime(2026, 1, 27, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["single", "multi"],
+                ProfileJson = """{"single":2}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Single-Multi-B",
+                Age = 46,
+                IsActive = true,
+                Status = "single-multi",
+                CreatedAt = new DateTime(2026, 1, 28, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["single", "multi"],
+                ProfileJson = """{"single":3}"""
+            }
+        ]);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            db.IntegrationUsers
+                .Where(u => u.Status == "single-multi")
+                .SingleOrDefaultAsync());
     }
 }
