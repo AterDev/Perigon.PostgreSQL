@@ -2,7 +2,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Perigon.PostgreSQL\Perigon.PostgreSQL.csproj" />
-    <ProjectReference Include="..\..\src\Perigon.PostgreSQL.SourceGeneration\Perigon.PostgreSQL.SourceGeneration.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Perigon.PostgreSQL.SourceGeneration\Perigon.PostgreSQL.SourceGeneration.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" Condition="'$(PublishAot)' != 'true'" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <Analyzer Include="..\..\src\Perigon.PostgreSQL.SourceGeneration\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.SourceGeneration.dll" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -10,8 +14,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <PublishAot>true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
+
+  <Target Name="BuildSourceGeneratorForAot" BeforeTargets="CoreCompile" Condition="'$(PublishAot)' == 'true'">
+    <MSBuild Projects="..\..\src\Perigon.PostgreSQL.SourceGeneration\Perigon.PostgreSQL.SourceGeneration.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);PublishAot=false;RuntimeIdentifier=;SelfContained=false" />
+  </Target>
 
 </Project>

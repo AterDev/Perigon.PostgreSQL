@@ -49,6 +49,149 @@ public sealed class EntityModelGeneratorTests
         Assert.Contains("\"jsonb\"", generated);
         Assert.DoesNotContain("Ignored", generated);
         Assert.Contains("EntityValueAccessorRegistry.Register<global::Demo.DemoUser>", generated);
+        Assert.Contains("EntityModelRegistry.RegisterContext<global::Demo.DemoDbContext>", generated);
+        Assert.Contains("EntityModel.For<global::Demo.DemoUser>()", generated);
+    }
+
+    [Fact]
+    public void Generator_reads_standard_data_annotations_metadata()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            using System.ComponentModel.DataAnnotations;
+            using System.ComponentModel.DataAnnotations.Schema;
+
+            namespace Demo;
+
+            public sealed class DemoDbContext : DbContext
+            {
+                public DemoDbContext() : base(_ => { }) { }
+
+                public DbSet<DemoUser> Users => Set<DemoUser>();
+            }
+
+            [Table("demo_users", Schema = "demo")]
+            public sealed class DemoUser
+            {
+                [Key]
+                [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+                [Column("user_id")]
+                public int Id { get; set; }
+
+                [Required]
+                [MaxLength(200)]
+                [Column("email", TypeName = "text")]
+                public string Email { get; set; } = "";
+
+                [NotMapped]
+                public string Ignored { get; set; } = "";
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("\"demo\"", generated);
+        Assert.Contains("\"demo_users\"", generated);
+        Assert.Contains("\"user_id\"", generated);
+        Assert.Contains("\"email\"", generated);
+        Assert.Contains("false,", generated);
+        Assert.Contains("200),", generated);
+        Assert.DoesNotContain("Ignored", generated);
+    }
+
+    [Fact]
+    public void Generator_reads_view_and_ef_index_metadata_by_name()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Attributes;
+            using Microsoft.EntityFrameworkCore;
+
+            namespace Microsoft.EntityFrameworkCore
+            {
+                [System.AttributeUsage(System.AttributeTargets.Class, AllowMultiple = true)]
+                public sealed class IndexAttribute : System.Attribute
+                {
+                    public IndexAttribute(params string[] propertyNames) => PropertyNames = propertyNames;
+                    public System.Collections.Generic.IReadOnlyList<string> PropertyNames { get; }
+                    public string? Name { get; init; }
+                    public bool IsUnique { get; init; }
+                }
+            }
+
+            namespace Demo
+            {
+                public sealed class DemoDbContext : DbContext
+                {
+                    public DemoDbContext() : base(_ => { }) { }
+
+                    public DbSet<DemoUser> Users => Set<DemoUser>();
+                    public DbSet<DemoUserView> UserViews => Set<DemoUserView>();
+                }
+
+                [Microsoft.EntityFrameworkCore.Index(nameof(Email), Name = "uq_demo_users_email", IsUnique = true)]
+                public sealed class DemoUser
+                {
+                    public int Id { get; set; }
+                    public string Email { get; set; } = "";
+                }
+
+                [View("demo_user_view", Schema = "reporting")]
+                public sealed class DemoUserView
+                {
+                    public int Id { get; set; }
+                    public string Email { get; set; } = "";
+                }
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("new global::Perigon.PostgreSQL.Metadata.IndexDefinition(", generated);
+        Assert.Contains("\"uq_demo_users_email\"", generated);
+        Assert.Contains("\"Email\"", generated);
+        Assert.Contains("true)", generated);
+        Assert.Contains("\"reporting\"", generated);
+        Assert.Contains("\"demo_user_view\"", generated);
+    }
+
+    [Fact]
+    public void Generator_skips_not_mapped_dbset_entity_types()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            using System.ComponentModel.DataAnnotations.Schema;
+
+            namespace Demo;
+
+            public sealed class DemoDbContext : DbContext
+            {
+                public DemoDbContext() : base(_ => { }) { }
+
+                public DbSet<MappedUser> Users => Set<MappedUser>();
+                public DbSet<IgnoredUser> IgnoredUsers => Set<IgnoredUser>();
+            }
+
+            public sealed class MappedUser
+            {
+                public int Id { get; set; }
+            }
+
+            [NotMapped]
+            public sealed class IgnoredUser
+            {
+                public int Id { get; set; }
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("EntityModelRegistry.Register<global::Demo.MappedUser>", generated);
+        Assert.DoesNotContain("EntityModelRegistry.Register<global::Demo.IgnoredUser>", generated);
+        Assert.DoesNotContain("EntityModel.For<global::Demo.IgnoredUser>()", generated);
     }
 
     [Fact]

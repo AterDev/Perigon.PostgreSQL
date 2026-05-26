@@ -18,8 +18,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         var dbSetEntities = context.SyntaxProvider
             .CreateSyntaxProvider(
                 static (node, _) => node is PropertyDeclarationSyntax,
-                static (syntaxContext, _) => TryReadDbSetEntity(syntaxContext))
-            .Where(static entity => entity is not null);
+                static (syntaxContext, _) => TryReadDbSetInfo(syntaxContext))
+            .Where(static dbSet => dbSet is not null);
 
         var materializerTypes = context.SyntaxProvider
             .CreateSyntaxProvider(
@@ -32,17 +32,22 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             static (productionContext, input) => Execute(productionContext, input.Left, input.Right));
     }
 
-    private static INamedTypeSymbol? TryReadDbSetEntity(GeneratorSyntaxContext context)
+    private static DbSetInfo? TryReadDbSetInfo(GeneratorSyntaxContext context)
     {
         var property = (PropertyDeclarationSyntax)context.Node;
         if (context.SemanticModel.GetDeclaredSymbol(property) is not IPropertySymbol propertySymbol ||
             propertySymbol.Type is not INamedTypeSymbol { IsGenericType: true, TypeArguments.Length: 1 } type ||
-            type.OriginalDefinition.ToDisplayString() != "Perigon.PostgreSQL.DbSet<T>")
+            type.OriginalDefinition.ToDisplayString() != "Perigon.PostgreSQL.DbSet<T>" ||
+            propertySymbol.ContainingType is not { } contextType ||
+            !InheritsFrom(contextType, "Perigon.PostgreSQL.DbContext") ||
+            !IsAccessibleFromGeneratedCode(contextType) ||
+            type.TypeArguments[0] is not INamedTypeSymbol entityType ||
+            IsNotMapped(entityType))
         {
             return null;
         }
 
-        return type.TypeArguments[0] as INamedTypeSymbol;
+        return new DbSetInfo(contextType, entityType);
     }
 
     private static INamedTypeSymbol? TryReadMaterializerType(GeneratorSyntaxContext context)
@@ -52,6 +57,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             type.IsAbstract ||
             type.IsGenericType ||
             !IsAccessibleFromGeneratedCode(type) ||
+            IsNotMapped(type) ||
             InheritsFrom(type, "Perigon.PostgreSQL.DbContext") ||
             !HasPublicParameterlessConstructor(type))
         {
@@ -63,21 +69,31 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
     private static void Execute(
         SourceProductionContext context,
-        ImmutableArray<INamedTypeSymbol?> entities,
+        ImmutableArray<DbSetInfo?> dbSets,
         ImmutableArray<INamedTypeSymbol?> materializerTypes)
     {
         var distinct = new Dictionary<string, EntityInfo>(StringComparer.Ordinal);
+        var contexts = new Dictionary<string, ContextInfo>(StringComparer.Ordinal);
         var materializers = new Dictionary<string, MaterializerInfo>(StringComparer.Ordinal);
-        foreach (var entity in entities)
+        foreach (var dbSet in dbSets)
         {
-            if (entity is null)
+            if (dbSet is null)
             {
                 continue;
             }
 
-            var info = ReadEntity(entity);
+            var info = ReadEntity(dbSet.EntityType);
             distinct[info.FullName] = info;
             materializers[info.FullName] = info.ToMaterializerInfo();
+
+            var contextFullName = dbSet.ContextType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            if (!contexts.TryGetValue(contextFullName, out var contextInfo))
+            {
+                contextInfo = new ContextInfo(contextFullName, SanitizeIdentifier(contextFullName));
+                contexts[contextFullName] = contextInfo;
+            }
+
+            contextInfo.AddEntity(info.FullName);
         }
 
         foreach (var type in materializerTypes)
@@ -98,17 +114,27 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         var source = GenerateRegistrationSource(
             distinct.Values.OrderBy(entity => entity.FullName, StringComparer.Ordinal),
+            contexts.Values.OrderBy(context => context.FullName, StringComparer.Ordinal),
             materializers.Values.OrderBy(type => type.FullName, StringComparer.Ordinal));
         context.AddSource("PerigonEntityModelRegistration.g.cs", SourceText.From(source, Encoding.UTF8));
     }
 
     private static EntityInfo ReadEntity(INamedTypeSymbol entity)
     {
-        var tableAttribute = FindAttribute(entity.GetAttributes(), "Perigon.PostgreSQL.Attributes.TableAttribute");
-        var tableName = ReadStringConstructorArgument(tableAttribute) ?? DefaultTableName(TrimGenericArity(entity.Name));
-        var schema = ReadNamedStringArgument(tableAttribute, "Schema");
+        var viewAttribute = FindAttribute(entity.GetAttributes(), "Perigon.PostgreSQL.Attributes.ViewAttribute");
+        var tableAttribute = FindAttribute(
+            entity.GetAttributes(),
+            "Perigon.PostgreSQL.Attributes.TableAttribute",
+            "System.ComponentModel.DataAnnotations.Schema.TableAttribute");
+        var tableName = ReadStringConstructorArgument(viewAttribute)
+            ?? ReadStringConstructorArgument(tableAttribute)
+            ?? DefaultTableName(TrimGenericArity(entity.Name));
+        var schema = ReadNamedStringArgument(viewAttribute, "Schema") ?? ReadNamedStringArgument(tableAttribute, "Schema");
         var columns = ReadProperties(entity)
-            .Where(static property => FindAttribute(property.GetAttributes(), "Perigon.PostgreSQL.Attributes.NotMappedAttribute") is null)
+            .Where(static property => FindAttribute(
+                property.GetAttributes(),
+                "Perigon.PostgreSQL.Attributes.NotMappedAttribute",
+                "System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute") is null)
             .Select(property => ReadColumn(entity, property))
             .ToArray();
 
@@ -117,7 +143,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             SanitizeIdentifier(entity.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)),
             Literal(schema),
             Literal(tableName),
-            columns);
+                viewAttribute is not null,
+                ReadIndexDefinitions(entity),
+                columns);
     }
 
     private static MaterializerInfo ReadMaterializer(INamedTypeSymbol type)
@@ -126,7 +154,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             SanitizeIdentifier(type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)),
             ReadProperties(type)
-                .Where(static property => FindAttribute(property.GetAttributes(), "Perigon.PostgreSQL.Attributes.NotMappedAttribute") is null)
+                .Where(static property => FindAttribute(
+                    property.GetAttributes(),
+                    "Perigon.PostgreSQL.Attributes.NotMappedAttribute",
+                    "System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute") is null)
                 .Select(property => ReadColumn(type, property))
                 .ToArray());
     }
@@ -153,17 +184,33 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
     private static ColumnInfo ReadColumn(INamedTypeSymbol entity, IPropertySymbol property)
     {
-        var columnAttribute = FindAttribute(property.GetAttributes(), "Perigon.PostgreSQL.Attributes.ColumnAttribute");
+        var columnAttribute = FindAttribute(
+            property.GetAttributes(),
+            "Perigon.PostgreSQL.Attributes.ColumnAttribute",
+            "System.ComponentModel.DataAnnotations.Schema.ColumnAttribute");
+        var keyAttribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.KeyAttribute");
+        var requiredAttribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.RequiredAttribute");
+        var databaseGeneratedAttribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedAttribute");
+        var databaseGeneratedOption = ReadIntConstructorArgument(databaseGeneratedAttribute);
+        var maxLength = ReadIntConstructorArgument(FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.MaxLengthAttribute"));
+        if (maxLength is null or < 0)
+        {
+            maxLength = ReadIntConstructorArgument(FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.StringLengthAttribute"));
+        }
+
         var columnName = ReadStringConstructorArgument(columnAttribute)
             ?? ReadNamedStringArgument(columnAttribute, "Name")
             ?? ToSnakeCase(property.Name);
         var typeName = ReadNamedStringArgument(columnAttribute, "TypeName");
         var isPrimaryKey = ReadNamedBoolArgument(columnAttribute, "IsPrimaryKey") ||
+                           keyAttribute is not null ||
                            property.Name == "Id" ||
                            property.Name == entity.Name + "Id";
+        var conventionIdentity = databaseGeneratedOption != 0 && isPrimaryKey && IsInteger(property.Type);
         var isIdentity = ReadNamedBoolArgument(columnAttribute, "IsIdentity") ||
-                         (isPrimaryKey && IsInteger(property.Type));
-        var isGenerated = ReadNamedBoolArgument(columnAttribute, "IsGenerated");
+                         databaseGeneratedOption == 1 ||
+                         conventionIdentity;
+        var isGenerated = ReadNamedBoolArgument(columnAttribute, "IsGenerated") || databaseGeneratedOption == 2;
         var isArray = ReadNamedBoolArgument(columnAttribute, "IsArray") || IsArrayLike(property.Type);
 
         return new ColumnInfo(
@@ -176,12 +223,18 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             isIdentity,
             isGenerated,
             isArray,
+            IsNullable(property, requiredAttribute is not null),
+            maxLength,
             property.SetMethod is { DeclaredAccessibility: Accessibility.Public });
     }
 
-    private static string GenerateRegistrationSource(IEnumerable<EntityInfo> entities, IEnumerable<MaterializerInfo> materializers)
+    private static string GenerateRegistrationSource(
+        IEnumerable<EntityInfo> entities,
+        IEnumerable<ContextInfo> contexts,
+        IEnumerable<MaterializerInfo> materializers)
     {
         var entityList = entities.ToArray();
+        var contextList = contexts.ToArray();
         var materializerList = materializers.ToArray();
         var builder = new StringBuilder();
         builder.AppendLine("// <auto-generated />");
@@ -212,7 +265,28 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 builder.AppendLine($"                            {BoolLiteral(column.IsPrimaryKey)},");
                 builder.AppendLine($"                            {BoolLiteral(column.IsIdentity)},");
                 builder.AppendLine($"                            {BoolLiteral(column.IsGenerated)},");
-                builder.AppendLine($"                            {BoolLiteral(column.IsArray)}),");
+                builder.AppendLine($"                            {BoolLiteral(column.IsArray)},");
+                builder.AppendLine($"                            {BoolLiteral(column.IsNullable)},");
+                builder.AppendLine($"                            {IntLiteral(column.MaxLength)}),");
+            }
+
+            builder.AppendLine("                    },");
+            builder.AppendLine($"                    {BoolLiteral(entity.IsView)},");
+            builder.AppendLine("                    new global::Perigon.PostgreSQL.Metadata.IndexDefinition[]");
+            builder.AppendLine("                    {");
+            foreach (var index in entity.Indexes)
+            {
+                builder.AppendLine("                        new global::Perigon.PostgreSQL.Metadata.IndexDefinition(");
+                builder.AppendLine($"                            {Literal(index.Name)},");
+                builder.AppendLine("                            new string[]");
+                builder.AppendLine("                            {");
+                foreach (var propertyName in index.PropertyNames)
+                {
+                    builder.AppendLine($"                                {Literal(propertyName)},");
+                }
+
+                builder.AppendLine("                            },");
+                builder.AppendLine($"                            {BoolLiteral(index.IsUnique)}),");
             }
 
             builder.AppendLine("                    }));");
@@ -222,6 +296,19 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             foreach (var column in entity.Columns)
             {
                 builder.AppendLine($"                    [{Literal(column.PropertyName)}] = static entity => entity.{column.MemberAccessName},");
+            }
+
+            builder.AppendLine("                });");
+        }
+
+        foreach (var context in contextList)
+        {
+            builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityModelRegistry.RegisterContext<{context.FullName}>(");
+            builder.AppendLine("                new global::Perigon.PostgreSQL.Metadata.EntityModel[]");
+            builder.AppendLine("                {");
+            foreach (var entityFullName in context.EntityFullNames.OrderBy(static name => name, StringComparer.Ordinal))
+            {
+                builder.AppendLine($"                    global::Perigon.PostgreSQL.Metadata.EntityModel.For<{entityFullName}>(),");
             }
 
             builder.AppendLine("                });");
@@ -276,9 +363,11 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return builder.ToString();
     }
 
-    private static AttributeData? FindAttribute(ImmutableArray<AttributeData> attributes, string metadataName)
+    private static AttributeData? FindAttribute(ImmutableArray<AttributeData> attributes, params string[] metadataNames)
     {
-        return attributes.FirstOrDefault(attribute => attribute.AttributeClass?.ToDisplayString() == metadataName);
+        return attributes.FirstOrDefault(attribute =>
+            attribute.AttributeClass is not null &&
+            metadataNames.Contains(attribute.AttributeClass.ToDisplayString(), StringComparer.Ordinal));
     }
 
     private static string? ReadStringConstructorArgument(AttributeData? attribute)
@@ -307,6 +396,16 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return null;
     }
 
+    private static int? ReadIntConstructorArgument(AttributeData? attribute)
+    {
+        if (attribute is not null && attribute.ConstructorArguments.Length > 0 && attribute.ConstructorArguments[0].Value is int value)
+        {
+            return value;
+        }
+
+        return null;
+    }
+
     private static bool ReadNamedBoolArgument(AttributeData? attribute, string name)
     {
         if (attribute is null)
@@ -325,6 +424,38 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return false;
     }
 
+    private static IReadOnlyList<IndexInfo> ReadIndexDefinitions(INamedTypeSymbol entity)
+    {
+        var indexes = new List<IndexInfo>();
+        foreach (var attribute in entity.GetAttributes())
+        {
+            var attributeName = attribute.AttributeClass?.ToDisplayString();
+            if (attributeName is not "Microsoft.EntityFrameworkCore.IndexAttribute" ||
+                attribute.ConstructorArguments.Length == 0 ||
+                attribute.ConstructorArguments[0].Kind != TypedConstantKind.Array)
+            {
+                continue;
+            }
+
+            var propertyNames = attribute.ConstructorArguments[0].Values
+                .Select(static argument => argument.Value as string)
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Cast<string>()
+                .ToArray();
+            if (propertyNames.Length == 0)
+            {
+                continue;
+            }
+
+            indexes.Add(new IndexInfo(
+                ReadNamedStringArgument(attribute, "Name"),
+                propertyNames,
+                ReadNamedBoolArgument(attribute, "IsUnique")));
+        }
+
+        return indexes;
+    }
+
     private static bool IsInteger(ITypeSymbol type)
     {
         var actual = type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol nullable
@@ -338,7 +469,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
     {
         if (type.TypeKind == TypeKind.Array)
         {
-            return true;
+            return type is not IArrayTypeSymbol { ElementType.SpecialType: SpecialType.System_Byte };
         }
 
         return type is INamedTypeSymbol { IsGenericType: true } named &&
@@ -349,6 +480,14 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
     {
         return type.Constructors.Any(static constructor =>
             constructor.DeclaredAccessibility == Accessibility.Public && constructor.Parameters.Length == 0);
+    }
+
+    private static bool IsNotMapped(INamedTypeSymbol type)
+    {
+        return FindAttribute(
+            type.GetAttributes(),
+            "Perigon.PostgreSQL.Attributes.NotMappedAttribute",
+            "System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute") is not null;
     }
 
     private static bool InheritsFrom(INamedTypeSymbol type, string metadataName)
@@ -385,6 +524,21 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         }
 
         return type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+    }
+
+    private static bool IsNullable(IPropertySymbol property, bool isRequired)
+    {
+        if (isRequired)
+        {
+            return false;
+        }
+
+        if (property.Type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
+        {
+            return true;
+        }
+
+        return property.Type.IsReferenceType && property.NullableAnnotation == NullableAnnotation.Annotated;
     }
 
     private static string TrimGenericArity(string name)
@@ -444,6 +598,11 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return value ? "true" : "false";
     }
 
+    private static string IntLiteral(int? value)
+    {
+        return value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null";
+    }
+
     private static string SanitizeIdentifier(string value)
     {
         var builder = new StringBuilder(value.Length);
@@ -463,14 +622,58 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             : "@" + value;
     }
 
+    private sealed class DbSetInfo
+    {
+        public DbSetInfo(INamedTypeSymbol contextType, INamedTypeSymbol entityType)
+        {
+            ContextType = contextType;
+            EntityType = entityType;
+        }
+
+        public INamedTypeSymbol ContextType { get; }
+
+        public INamedTypeSymbol EntityType { get; }
+    }
+
+    private sealed class ContextInfo
+    {
+        private readonly HashSet<string> _entityFullNames = new(StringComparer.Ordinal);
+
+        public ContextInfo(string fullName, string safeName)
+        {
+            FullName = fullName;
+            SafeName = safeName;
+        }
+
+        public string FullName { get; }
+
+        public string SafeName { get; }
+
+        public IReadOnlyCollection<string> EntityFullNames => _entityFullNames;
+
+        public void AddEntity(string entityFullName)
+        {
+            _entityFullNames.Add(entityFullName);
+        }
+    }
+
     private sealed class EntityInfo
     {
-        public EntityInfo(string fullName, string safeName, string schemaLiteral, string tableNameLiteral, IReadOnlyList<ColumnInfo> columns)
+        public EntityInfo(
+            string fullName,
+            string safeName,
+            string schemaLiteral,
+            string tableNameLiteral,
+            bool isView,
+            IReadOnlyList<IndexInfo> indexes,
+            IReadOnlyList<ColumnInfo> columns)
         {
             FullName = fullName;
             SafeName = safeName;
             SchemaLiteral = schemaLiteral;
             TableNameLiteral = tableNameLiteral;
+            IsView = isView;
+            Indexes = indexes;
             Columns = columns;
         }
 
@@ -482,12 +685,32 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         public string TableNameLiteral { get; }
 
+        public bool IsView { get; }
+
+        public IReadOnlyList<IndexInfo> Indexes { get; }
+
         public IReadOnlyList<ColumnInfo> Columns { get; }
 
         public MaterializerInfo ToMaterializerInfo()
         {
             return new MaterializerInfo(FullName, SafeName, Columns);
         }
+    }
+
+    private sealed class IndexInfo
+    {
+        public IndexInfo(string? name, IReadOnlyList<string> propertyNames, bool isUnique)
+        {
+            Name = name;
+            PropertyNames = propertyNames;
+            IsUnique = isUnique;
+        }
+
+        public string? Name { get; }
+
+        public IReadOnlyList<string> PropertyNames { get; }
+
+        public bool IsUnique { get; }
     }
 
     private sealed class MaterializerInfo
@@ -518,6 +741,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             bool isIdentity,
             bool isGenerated,
             bool isArray,
+            bool isNullable,
+            int? maxLength,
             bool canWrite)
         {
             PropertyName = propertyName;
@@ -531,6 +756,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             IsIdentity = isIdentity;
             IsGenerated = isGenerated;
             IsArray = isArray;
+            IsNullable = isNullable;
+            MaxLength = maxLength;
             CanWrite = canWrite;
         }
 
@@ -555,6 +782,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public bool IsGenerated { get; }
 
         public bool IsArray { get; }
+
+        public bool IsNullable { get; }
+
+        public int? MaxLength { get; }
 
         public bool CanWrite { get; }
     }

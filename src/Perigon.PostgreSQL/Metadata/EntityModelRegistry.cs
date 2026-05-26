@@ -3,6 +3,7 @@ namespace Perigon.PostgreSQL.Metadata;
 public static class EntityModelRegistry
 {
     private static readonly Dictionary<Type, EntityModel> Models = new();
+    private static readonly Dictionary<Type, IReadOnlyList<EntityModel>> ContextModels = new();
     private static readonly object Sync = new();
 
     public static void Register<T>(EntityModel model)
@@ -24,6 +25,25 @@ public static class EntityModelRegistry
         lock (Sync)
         {
             return Models.TryGetValue(entityType, out model!);
+        }
+    }
+
+    public static void RegisterContext<TContext>(IReadOnlyList<EntityModel> models)
+        where TContext : DbContext
+    {
+        lock (Sync)
+        {
+            ContextModels[typeof(TContext)] = models.ToArray();
+        }
+    }
+
+    public static IReadOnlyList<EntityModel> GetContextModels(Type contextType)
+    {
+        lock (Sync)
+        {
+            return ContextModels.TryGetValue(contextType, out var models)
+                ? models
+                : Array.Empty<EntityModel>();
         }
     }
 }

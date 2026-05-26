@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.ComponentModel.DataAnnotations;
 using System.Reflection;
 
 namespace Perigon.PostgreSQL.Metadata;
@@ -14,7 +15,9 @@ public sealed class ColumnModel
         bool isPrimaryKey,
         bool isIdentity,
         bool isGenerated,
-        bool isArray)
+        bool isArray,
+        bool isNullable,
+        int? maxLength = null)
         : this(
             property.DeclaringType ?? throw new ArgumentException("Property must have a declaring type.", nameof(property)),
             property.Name,
@@ -24,7 +27,9 @@ public sealed class ColumnModel
             isPrimaryKey,
             isIdentity,
             isGenerated,
-            isArray)
+            isArray,
+            isNullable,
+            maxLength)
     {
         _property = property;
     }
@@ -38,7 +43,9 @@ public sealed class ColumnModel
         bool isPrimaryKey,
         bool isIdentity,
         bool isGenerated,
-        bool isArray)
+        bool isArray,
+        bool isNullable,
+        int? maxLength)
     {
         DeclaringType = declaringType;
         PropertyName = propertyName;
@@ -49,6 +56,8 @@ public sealed class ColumnModel
         IsIdentity = isIdentity;
         IsGenerated = isGenerated;
         IsArray = isArray;
+        IsNullable = isNullable;
+        MaxLength = maxLength;
     }
 
     public PropertyInfo Property
@@ -79,6 +88,10 @@ public sealed class ColumnModel
 
     public bool IsArray { get; }
 
+    public bool IsNullable { get; }
+
+    public int? MaxLength { get; }
+
     public bool IsWritable => !IsIdentity && !IsGenerated;
 
     public static ColumnModel CreateGenerated<TDeclaring, TProperty>(
@@ -88,7 +101,9 @@ public sealed class ColumnModel
         bool isPrimaryKey,
         bool isIdentity,
         bool isGenerated,
-        bool isArray)
+        bool isArray,
+        bool isNullable,
+        int? maxLength = null)
     {
         return new ColumnModel(
             typeof(TDeclaring),
@@ -99,6 +114,8 @@ public sealed class ColumnModel
             isPrimaryKey,
             isIdentity,
             isGenerated,
-            isArray);
+            isArray,
+            isNullable,
+            maxLength);
     }
 }

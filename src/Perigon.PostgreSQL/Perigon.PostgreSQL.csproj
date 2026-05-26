@@ -34,8 +34,8 @@
     <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
     <None Include="..\..\RELEASE_NOTES.md" Pack="true" PackagePath="\" />
     <None Include="..\..\perigon_logo.png" Pack="true" PackagePath="\" Visible="false" />
-    <ProjectReference Include="..\Perigon.PostgreSQL.SourceGeneration\Perigon.PostgreSQL.SourceGeneration.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
-    <ProjectReference Include="..\Perigon.PostgreSQL.Analyzers\Perigon.PostgreSQL.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\Perigon.PostgreSQL.SourceGeneration\Perigon.PostgreSQL.SourceGeneration.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" Condition="'$(PublishAot)' != 'true'" />
+    <ProjectReference Include="..\Perigon.PostgreSQL.Analyzers\Perigon.PostgreSQL.Analyzers.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" Condition="'$(PublishAot)' != 'true'" />
     <None Include="..\Perigon.PostgreSQL.SourceGeneration\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.SourceGeneration.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" Condition="Exists('..\Perigon.PostgreSQL.SourceGeneration\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.SourceGeneration.dll')" />
     <None Include="..\Perigon.PostgreSQL.Analyzers\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.Analyzers.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" Condition="Exists('..\Perigon.PostgreSQL.Analyzers\bin\$(Configuration)\netstandard2.0\Perigon.PostgreSQL.Analyzers.dll')" />
   </ItemGroup>

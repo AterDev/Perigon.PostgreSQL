@@ -5,6 +5,7 @@
   <Folder Name="/src/">
     <Project Path="src/Perigon.PostgreSQL.Analyzers/Perigon.PostgreSQL.Analyzers.csproj" />
     <Project Path="src/Perigon.PostgreSQL.SourceGeneration/Perigon.PostgreSQL.SourceGeneration.csproj" />
+    <Project Path="src/Perigon.PostgreSQL.Tools/Perigon.PostgreSQL.Tools.csproj" />
     <Project Path="src/Perigon.PostgreSQL/Perigon.PostgreSQL.csproj" />
   </Folder>
   <Folder Name="/tests/">

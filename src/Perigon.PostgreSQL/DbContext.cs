@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Options;
 using Perigon.PostgreSQL.RawSql;
+using Perigon.PostgreSQL.Sql;
 
 namespace Perigon.PostgreSQL;
 
@@ -77,6 +78,91 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         return new RawSqlCommand(this, sql);
     }
 
+    public async Task EnsureCreatedAsync(CancellationToken cancellationToken = default)
+    {
+        var models = GetEntityModels();
+        if (models.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"DbContext '{GetType().FullName}' does not have generated entity metadata. Ensure the Perigon.PostgreSQL source generator is referenced by the application.");
+        }
+
+        var tableModels = models.Where(static model => !model.IsView).ToArray();
+        var schemas = tableModels
+            .Select(model => model.Schema)
+            .Where(static schema => !string.IsNullOrWhiteSpace(schema))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var foreignKeys = RelationshipConventions.InferForeignKeys(tableModels);
+
+        if (_transactionConnection is not null && _transaction is not null)
+        {
+            foreach (var schema in schemas)
+            {
+                await ExecuteDdlAsync(CreateTableSqlBuilder.BuildCreateSchema(schema!), _transactionConnection, _transaction, cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var model in tableModels)
+            {
+                await ExecuteDdlAsync(CreateTableSqlBuilder.BuildCreateTable(model), _transactionConnection, _transaction, cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var foreignKey in foreignKeys)
+            {
+                await ExecuteDdlAsync(CreateTableSqlBuilder.BuildAddForeignKey(foreignKey), _transactionConnection, _transaction, cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var index in tableModels.SelectMany(static model => model.Indexes))
+            {
+                await ExecuteDdlAsync(CreateTableSqlBuilder.BuildCreateIndex(index), _transactionConnection, _transaction, cancellationToken).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        await using var connection = await GetDataSource().OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var schema in schemas)
+            {
+                await ExecuteDdlAsync(CreateTableSqlBuilder.BuildCreateSchema(schema!), connection, transaction, cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var model in tableModels)
+            {
+                await ExecuteDdlAsync(CreateTableSqlBuilder.BuildCreateTable(model), connection, transaction, cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var foreignKey in foreignKeys)
+            {
+                await ExecuteDdlAsync(CreateTableSqlBuilder.BuildAddForeignKey(foreignKey), connection, transaction, cancellationToken).ConfigureAwait(false);
+            }
+
+            foreach (var index in tableModels.SelectMany(static model => model.Indexes))
+            {
+                await ExecuteDdlAsync(CreateTableSqlBuilder.BuildCreateIndex(index), connection, transaction, cancellationToken).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public void EnsureCreated()
+    {
+        EnsureCreatedAsync().GetAwaiter().GetResult();
+    }
+
+    protected virtual IReadOnlyList<EntityModel> GetEntityModels()
+    {
+        return EntityModelRegistry.GetContextModels(GetType());
+    }
+
     public async Task TransactionAsync(
         Func<CancellationToken, Task> action,
         CancellationToken cancellationToken = default)
@@ -142,6 +228,14 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         }
 
         return command;
+    }
+
+    private static async Task ExecuteDdlAsync(string commandText, NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = commandText;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     internal bool TryGetTransactionConnection([NotNullWhen(true)] out NpgsqlConnection? connection)
