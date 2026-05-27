@@ -56,7 +56,7 @@ public static class IncludeManyExtensions
             return [];
         }
 
-        var parentModel = EntityModel.For<TParent>();
+        var parentModel = ResolveEntityModel(parents);
         var parentColumn = parentModel.GetColumn(ReadPropertyName(parentKey.Body));
         var childColumn = children.Model.GetColumn(ReadPropertyName(childForeignKey.Body));
         var keys = parentRows
@@ -134,6 +134,22 @@ public static class IncludeManyExtensions
             children.Model,
             new BoundSql(sql, parameters.Parameters),
             cancellationToken);
+    }
+
+    private static EntityModel ResolveEntityModel<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(IQueryable<T> source)
+    {
+        if (source is IEntityModelSource modelSource)
+        {
+            return modelSource.Model;
+        }
+
+        if (source.Provider is PostgresQueryProvider provider)
+        {
+            return provider.Context.ResolveEntityModel(typeof(T));
+        }
+
+        throw new InvalidOperationException("Query was not created by Perigon.PostgreSQL.");
     }
 
     private static string ReadPropertyName(Expression expression)

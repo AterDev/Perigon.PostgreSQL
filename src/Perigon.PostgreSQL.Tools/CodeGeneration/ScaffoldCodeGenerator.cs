@@ -62,7 +62,7 @@ public sealed class ScaffoldCodeGenerator
         builder.AppendLine("using System.ComponentModel.DataAnnotations.Schema;");
         if (table.Indexes.Count > 0)
         {
-            builder.AppendLine("using EfCoreIndexAttribute = Microsoft.EntityFrameworkCore.IndexAttribute;");
+            builder.AppendLine("using PerigonIndexAttribute = Perigon.PostgreSQL.Attributes.IndexAttribute;");
         }
 
         if (table.IsView)
@@ -220,7 +220,7 @@ public sealed class ScaffoldCodeGenerator
             namedArguments.Add("IsUnique = true");
         }
 
-        attribute = "[EfCoreIndexAttribute(" + arguments + ", " + string.Join(", ", namedArguments) + ")]";
+        attribute = "[PerigonIndexAttribute(" + arguments + ", " + string.Join(", ", namedArguments) + ")]";
         return true;
     }
 

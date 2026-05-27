@@ -34,6 +34,10 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
     {
     }
 
+    protected virtual void OnModelCreating(ModelBuilder modelBuilder)
+    {
+    }
+
     protected DbSet<T> Set<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>()
         where T : class
     {
@@ -42,7 +46,8 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
             return (DbSet<T>)existing;
         }
 
-        var set = new DbSet<T>(this, EntityModel.For<T>());
+        var model = ResolveEntityModel(typeof(T));
+        var set = new DbSet<T>(this, model);
         _sets.Add(typeof(T), set);
         return set;
     }
@@ -117,6 +122,11 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
                 await ExecuteDdlAsync(CreateTableSqlBuilder.BuildCreateIndex(index), _transactionConnection, _transaction, cancellationToken).ConfigureAwait(false);
             }
 
+            foreach (var comment in tableModels.SelectMany(CreateTableSqlBuilder.BuildComments))
+            {
+                await ExecuteDdlAsync(comment, _transactionConnection, _transaction, cancellationToken).ConfigureAwait(false);
+            }
+
             return;
         }
 
@@ -144,6 +154,11 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
                 await ExecuteDdlAsync(CreateTableSqlBuilder.BuildCreateIndex(index), connection, transaction, cancellationToken).ConfigureAwait(false);
             }
 
+            foreach (var comment in tableModels.SelectMany(CreateTableSqlBuilder.BuildComments))
+            {
+                await ExecuteDdlAsync(comment, connection, transaction, cancellationToken).ConfigureAwait(false);
+            }
+
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -160,7 +175,15 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
 
     protected virtual IReadOnlyList<EntityModel> GetEntityModels()
     {
-        return EntityModelRegistry.GetContextModels(GetType());
+        var models = EntityModelRegistry.GetContextModels(GetType());
+        if (models.Count == 0)
+        {
+            return models;
+        }
+
+        var builder = new ModelBuilder();
+        OnModelCreating(builder);
+        return builder.Apply(models);
     }
 
     public async Task TransactionAsync(
@@ -242,6 +265,13 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
     {
         connection = _transactionConnection;
         return connection is not null;
+    }
+
+    internal EntityModel ResolveEntityModel(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
+    {
+        return GetEntityModels().FirstOrDefault(item => item.ClrType == entityType)
+            ?? EntityModel.For(entityType);
     }
 
     public async ValueTask DisposeAsync()

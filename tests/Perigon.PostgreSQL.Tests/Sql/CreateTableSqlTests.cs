@@ -60,6 +60,32 @@ public sealed class CreateTableSqlTests
     }
 
     [Fact]
+    public void InferForeignKeys_uses_fluent_relationship_configuration()
+    {
+        using var db = new FluentRelationshipDbContext();
+        var models = db.ReadModels();
+
+        var foreignKey = Assert.Single(RelationshipConventions.InferForeignKeys(models));
+
+        Assert.Equal("fk_fluent_blogs_author_id", foreignKey.ConstraintName);
+        Assert.Equal("author_id", foreignKey.DependentColumn.ColumnName);
+        Assert.Equal("fluent_blogs", foreignKey.DependentEntity.TableName);
+        Assert.Equal("fluent_users", foreignKey.PrincipalEntity.TableName);
+    }
+
+    [Fact]
+    public void BuildAddForeignKey_uses_fluent_constraint_name()
+    {
+        using var db = new FluentRelationshipDbContext();
+        var foreignKey = Assert.Single(RelationshipConventions.InferForeignKeys(db.ReadModels()));
+
+        var sql = CreateTableSqlBuilder.BuildAddForeignKey(foreignKey);
+
+        Assert.Contains("conname = 'fk_fluent_blogs_author_id'", sql);
+        Assert.Contains("ALTER TABLE \"fluent_blogs\" ADD CONSTRAINT \"fk_fluent_blogs_author_id\" FOREIGN KEY (\"author_id\") REFERENCES \"fluent_users\" (\"id\")", sql);
+    }
+
+    [Fact]
     public void BuildCreateIndex_generates_unique_index_sql()
     {
         var model = EntityModel.For<IndexedUser>();
@@ -86,5 +112,54 @@ public sealed class CreateTableSqlTests
 
         [System.ComponentModel.DataAnnotations.Schema.DatabaseGenerated(System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedOption.Computed)]
         public string NormalizedName { get; set; } = "";
+    }
+
+    public sealed class FluentRelationshipDbContext : DbContext
+    {
+        public FluentRelationshipDbContext()
+            : base(_ => { })
+        {
+        }
+
+        public DbSet<FluentRelationshipUser> Users => Set<FluentRelationshipUser>();
+
+        public DbSet<FluentRelationshipBlog> Blogs => Set<FluentRelationshipBlog>();
+
+        public IReadOnlyList<EntityModel> ReadModels()
+        {
+            return GetEntityModels();
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<FluentRelationshipUser>().ToTable("fluent_users");
+            modelBuilder.Entity<FluentRelationshipBlog>(entity =>
+            {
+                entity.ToTable("fluent_blogs");
+                entity.Property(blog => blog.AuthorId).HasColumnName("author_id");
+                entity.HasOne(blog => blog.Author)
+                    .WithMany(user => user.Blogs)
+                    .HasForeignKey(blog => blog.AuthorId)
+                    .HasConstraintName("fk_fluent_blogs_author_id");
+            });
+        }
+    }
+
+    public sealed class FluentRelationshipUser
+    {
+        public int Id { get; set; }
+
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+        public List<FluentRelationshipBlog> Blogs { get; set; } = [];
+    }
+
+    public sealed class FluentRelationshipBlog
+    {
+        public int Id { get; set; }
+
+        public int AuthorId { get; set; }
+
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+        public FluentRelationshipUser? Author { get; set; }
     }
 }

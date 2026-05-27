@@ -1,9 +1,8 @@
-using Microsoft.EntityFrameworkCore;
 using Perigon.PostgreSQL.Attributes;
 
 namespace Perigon.PostgreSQL.Tests.Models;
 
-[Microsoft.EntityFrameworkCore.Index(nameof(Email), Name = "uq_indexed_users_email", IsUnique = true)]
+[Index(nameof(Email), Name = "uq_indexed_users_email", IsUnique = true)]
 public sealed class IndexedUser
 {
     public int Id { get; set; }

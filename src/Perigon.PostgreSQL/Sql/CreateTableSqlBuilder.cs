@@ -103,6 +103,27 @@ internal static class CreateTableSqlBuilder
         return $"CREATE {unique}INDEX IF NOT EXISTS {Identifier.Quote(index.IndexName)} ON {index.Entity.StoreObjectName} ({columns})";
     }
 
+    public static IReadOnlyList<string> BuildComments(EntityModel model)
+    {
+        var commands = new List<string>();
+        if (!string.IsNullOrWhiteSpace(model.Comment))
+        {
+            commands.Add($"COMMENT ON TABLE {model.StoreObjectName} IS {SqlLiteral(model.Comment!)}");
+        }
+
+        foreach (var column in model.Columns)
+        {
+            if (string.IsNullOrWhiteSpace(column.Comment))
+            {
+                continue;
+            }
+
+            commands.Add($"COMMENT ON COLUMN {model.StoreObjectName}.{Identifier.Quote(column.ColumnName)} IS {SqlLiteral(column.Comment!)}");
+        }
+
+        return commands;
+    }
+
     private static string BuildColumn(ColumnModel column)
     {
         if (column.IsGenerated)

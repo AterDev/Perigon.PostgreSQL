@@ -25,7 +25,7 @@ public static class RawSqlExtensions
     {
         return CommandExecutor.ExecuteQueryAsync<T>(
             query.Context,
-            EntityModel.For<T>(),
+            query.Context.ResolveEntityModel(typeof(T)),
             query.ToBoundSql(),
             cancellationToken);
     }

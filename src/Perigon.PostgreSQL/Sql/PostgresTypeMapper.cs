@@ -22,11 +22,11 @@ internal static class PostgresTypeMapper
         if (type == typeof(long)) return "bigint";
         if (type == typeof(float)) return "real";
         if (type == typeof(double)) return "double precision";
-        if (type == typeof(decimal)) return "numeric";
+        if (type == typeof(decimal)) return MapNumeric(column);
         if (type == typeof(bool)) return "boolean";
         if (type == typeof(string)) return column.MaxLength is > 0 ? $"character varying({column.MaxLength.Value})" : "text";
-        if (type == typeof(DateTime)) return "timestamp with time zone";
-        if (type == typeof(DateTimeOffset)) return "timestamp with time zone";
+        if (type == typeof(DateTime)) return MapTimestamp(column);
+        if (type == typeof(DateTimeOffset)) return MapTimestamp(column);
         if (type == typeof(Guid)) return "uuid";
         if (type == typeof(byte[])) return "bytea";
 
@@ -60,5 +60,24 @@ internal static class PostgresTypeMapper
         if (actual == typeof(Guid)) return "uuid[]";
 
         throw new NotSupportedException($"Array element type '{actual.FullName}' is not supported for PostgreSQL DDL generation. Configure an explicit TypeName.");
+    }
+
+    private static string MapNumeric(ColumnModel column)
+    {
+        if (column.Precision is null)
+        {
+            return "numeric";
+        }
+
+        return column.Scale is null
+            ? $"numeric({column.Precision.Value})"
+            : $"numeric({column.Precision.Value},{column.Scale.Value})";
+    }
+
+    private static string MapTimestamp(ColumnModel column)
+    {
+        return column.Precision is null
+            ? "timestamp with time zone"
+            : $"timestamp({column.Precision.Value}) with time zone";
     }
 }

@@ -25,7 +25,7 @@ internal static class CommandExecutor
         await using var command = context.CreateCommand(sql);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var results = new List<T>();
-        if (EntityMaterializerRegistry.TryGet<T>(out var generatedMaterializer))
+        if (CanUseGeneratedMaterializer<T>(model) && EntityMaterializerRegistry.TryGet<T>(out var generatedMaterializer))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
@@ -54,6 +54,34 @@ internal static class CommandExecutor
         }
 
         return results;
+    }
+
+    private static bool CanUseGeneratedMaterializer<T>(EntityModel model)
+        where T : class, new()
+    {
+        if (!EntityModelRegistry.TryGet(model.ClrType, out var defaultModel))
+        {
+            return false;
+        }
+
+        if (model.Columns.Count != defaultModel.Columns.Count)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < model.Columns.Count; i++)
+        {
+            var activeColumn = model.Columns[i];
+            var defaultColumn = defaultModel.Columns[i];
+            if (!string.Equals(activeColumn.PropertyName, defaultColumn.PropertyName, StringComparison.Ordinal) ||
+                !string.Equals(activeColumn.ColumnName, defaultColumn.ColumnName, StringComparison.Ordinal) ||
+                activeColumn.IsWritable != defaultColumn.IsWritable)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static List<(ColumnModel Column, int Ordinal)> BuildOrdinals(NpgsqlDataReader reader, EntityModel model)

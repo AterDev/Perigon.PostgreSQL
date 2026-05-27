@@ -36,7 +36,7 @@ public static class PostgresQueryableExtensions
         this IQueryable<T> source)
         where T : class
     {
-        return AggregateSqlBuilder.BuildCount(EntityModel.For<T>(), QueryModelFactory.Create(source.Expression));
+        return AggregateSqlBuilder.BuildCount(ResolveEntityModel(source), QueryModelFactory.Create(source.Expression));
     }
 
     public static BoundSql ToLongCountSql<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
@@ -50,7 +50,7 @@ public static class PostgresQueryableExtensions
         this IQueryable<T> source)
         where T : class
     {
-        return AggregateSqlBuilder.BuildAny(EntityModel.For<T>(), QueryModelFactory.Create(source.Expression));
+        return AggregateSqlBuilder.BuildAny(ResolveEntityModel(source), QueryModelFactory.Create(source.Expression));
     }
 
     public static BoundSql ToDeleteSql<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
@@ -59,7 +59,7 @@ public static class PostgresQueryableExtensions
         where T : class
     {
         return DeleteSqlBuilder.Build(
-            EntityModel.For<T>(),
+            ResolveEntityModel(source),
             QueryModelFactory.Create(source.Expression),
             options?.AllowFullTableDelete == true);
     }
@@ -71,7 +71,7 @@ public static class PostgresQueryableExtensions
         where T : class
     {
         return UpdateSqlBuilder.Build(
-            EntityModel.For<T>(),
+            ResolveEntityModel(source),
             QueryModelFactory.Create(source.Expression),
             setters,
             options?.AllowFullTableUpdate == true);
@@ -85,7 +85,7 @@ public static class PostgresQueryableExtensions
         var context = GetContext(source);
         return CommandExecutor.ExecuteQueryAsync<T>(
             context,
-            EntityModel.For<T>(),
+            ResolveEntityModel(source),
             source.ToQuerySql(),
             cancellationToken);
     }
@@ -270,6 +270,17 @@ public static class PostgresQueryableExtensions
         }
 
         throw new InvalidOperationException("Query was not created by Perigon.PostgreSQL.");
+    }
+
+    private static EntityModel ResolveEntityModel<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(IQueryable<T> source)
+    {
+        if (source is IEntityModelSource modelSource)
+        {
+            return modelSource.Model;
+        }
+
+        return GetContext(source).ResolveEntityModel(typeof(T));
     }
 
     private static async Task BulkInsertValuesAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(

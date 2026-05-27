@@ -126,6 +126,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             entity.GetAttributes(),
             "Perigon.PostgreSQL.Attributes.TableAttribute",
             "System.ComponentModel.DataAnnotations.Schema.TableAttribute");
+        var commentAttribute = FindAttribute(
+            entity.GetAttributes(),
+            "Perigon.PostgreSQL.Attributes.CommentAttribute",
+            "Microsoft.EntityFrameworkCore.CommentAttribute");
         var tableName = ReadStringConstructorArgument(viewAttribute)
             ?? ReadStringConstructorArgument(tableAttribute)
             ?? DefaultTableName(TrimGenericArity(entity.Name));
@@ -143,9 +147,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             SanitizeIdentifier(entity.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)),
             Literal(schema),
             Literal(tableName),
-                viewAttribute is not null,
-                ReadIndexDefinitions(entity),
-                columns);
+            viewAttribute is not null,
+            ReadIndexDefinitions(entity),
+            Literal(ReadComment(commentAttribute)),
+            columns);
     }
 
     private static MaterializerInfo ReadMaterializer(INamedTypeSymbol type)
@@ -191,12 +196,27 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         var keyAttribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.KeyAttribute");
         var requiredAttribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.RequiredAttribute");
         var databaseGeneratedAttribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedAttribute");
+        var precisionAttribute = FindAttribute(
+            property.GetAttributes(),
+            "Perigon.PostgreSQL.Attributes.PrecisionAttribute",
+            "Microsoft.EntityFrameworkCore.PrecisionAttribute");
+        var commentAttribute = FindAttribute(
+            property.GetAttributes(),
+            "Perigon.PostgreSQL.Attributes.CommentAttribute",
+            "Microsoft.EntityFrameworkCore.CommentAttribute");
+        var unicodeAttribute = FindAttribute(
+            property.GetAttributes(),
+            "Perigon.PostgreSQL.Attributes.UnicodeAttribute",
+            "Microsoft.EntityFrameworkCore.UnicodeAttribute");
         var databaseGeneratedOption = ReadIntConstructorArgument(databaseGeneratedAttribute);
         var maxLength = ReadIntConstructorArgument(FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.MaxLengthAttribute"));
         if (maxLength is null or < 0)
         {
             maxLength = ReadIntConstructorArgument(FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.StringLengthAttribute"));
         }
+
+        var precision = ReadIntConstructorArgument(precisionAttribute);
+        var scale = ReadSecondIntConstructorArgument(precisionAttribute);
 
         var columnName = ReadStringConstructorArgument(columnAttribute)
             ?? ReadNamedStringArgument(columnAttribute, "Name")
@@ -225,6 +245,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             isArray,
             IsNullable(property, requiredAttribute is not null),
             maxLength,
+                precision,
+                scale,
+                Literal(ReadComment(commentAttribute)),
+                ReadUnicode(unicodeAttribute),
             property.SetMethod is { DeclaredAccessibility: Accessibility.Public });
     }
 
@@ -267,7 +291,11 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 builder.AppendLine($"                            {BoolLiteral(column.IsGenerated)},");
                 builder.AppendLine($"                            {BoolLiteral(column.IsArray)},");
                 builder.AppendLine($"                            {BoolLiteral(column.IsNullable)},");
-                builder.AppendLine($"                            {IntLiteral(column.MaxLength)}),");
+                builder.AppendLine($"                            {IntLiteral(column.MaxLength)},");
+                builder.AppendLine($"                            {IntLiteral(column.Precision)},");
+                builder.AppendLine($"                            {IntLiteral(column.Scale)},");
+                builder.AppendLine($"                            {column.CommentLiteral},");
+                builder.AppendLine($"                            {NullableBoolLiteral(column.IsUnicode)}),");
             }
 
             builder.AppendLine("                    },");
@@ -289,7 +317,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 builder.AppendLine($"                            {BoolLiteral(index.IsUnique)}),");
             }
 
-            builder.AppendLine("                    }));");
+            builder.AppendLine("                    },");
+            builder.AppendLine($"                    {entity.CommentLiteral}));");
             builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityValueAccessorRegistry.Register<{entity.FullName}>(");
             builder.AppendLine($"                new global::System.Collections.Generic.Dictionary<string, global::System.Func<{entity.FullName}, object?>>");
             builder.AppendLine("                {");
@@ -424,13 +453,58 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return false;
     }
 
+    private static bool? ReadUnicode(AttributeData? attribute)
+    {
+        if (attribute is null)
+        {
+            return null;
+        }
+
+        if (attribute.ConstructorArguments.Length > 0 && attribute.ConstructorArguments[0].Value is bool value)
+        {
+            return value;
+        }
+
+        foreach (var argument in attribute.NamedArguments)
+        {
+            if (argument.Key == "IsUnicode" && argument.Value.Value is bool named)
+            {
+                return named;
+            }
+        }
+
+        return true;
+    }
+
+    private static int? ReadSecondIntConstructorArgument(AttributeData? attribute)
+    {
+        if (attribute is not null && attribute.ConstructorArguments.Length > 1 && attribute.ConstructorArguments[1].Value is int value)
+        {
+            return value;
+        }
+
+        return null;
+    }
+
+    private static string? ReadComment(AttributeData? attribute)
+    {
+        if (attribute is null)
+        {
+            return null;
+        }
+
+        return ReadStringConstructorArgument(attribute)
+            ?? ReadNamedStringArgument(attribute, "Text")
+            ?? ReadNamedStringArgument(attribute, "Comment");
+    }
+
     private static IReadOnlyList<IndexInfo> ReadIndexDefinitions(INamedTypeSymbol entity)
     {
         var indexes = new List<IndexInfo>();
         foreach (var attribute in entity.GetAttributes())
         {
             var attributeName = attribute.AttributeClass?.ToDisplayString();
-            if (attributeName is not "Microsoft.EntityFrameworkCore.IndexAttribute" ||
+            if (!IsSupportedIndexAttribute(attributeName) ||
                 attribute.ConstructorArguments.Length == 0 ||
                 attribute.ConstructorArguments[0].Kind != TypedConstantKind.Array)
             {
@@ -454,6 +528,12 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         }
 
         return indexes;
+    }
+
+    private static bool IsSupportedIndexAttribute(string? attributeName)
+    {
+        return attributeName is "Perigon.PostgreSQL.Attributes.IndexAttribute" or
+            "Microsoft.EntityFrameworkCore.IndexAttribute";
     }
 
     private static bool IsInteger(ITypeSymbol type)
@@ -598,6 +678,11 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return value ? "true" : "false";
     }
 
+    private static string NullableBoolLiteral(bool? value)
+    {
+        return value is null ? "null" : BoolLiteral(value.Value);
+    }
+
     private static string IntLiteral(int? value)
     {
         return value?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null";
@@ -666,6 +751,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             string tableNameLiteral,
             bool isView,
             IReadOnlyList<IndexInfo> indexes,
+            string commentLiteral,
             IReadOnlyList<ColumnInfo> columns)
         {
             FullName = fullName;
@@ -674,6 +760,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             TableNameLiteral = tableNameLiteral;
             IsView = isView;
             Indexes = indexes;
+            CommentLiteral = commentLiteral;
             Columns = columns;
         }
 
@@ -688,6 +775,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public bool IsView { get; }
 
         public IReadOnlyList<IndexInfo> Indexes { get; }
+
+        public string CommentLiteral { get; }
 
         public IReadOnlyList<ColumnInfo> Columns { get; }
 
@@ -743,6 +832,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             bool isArray,
             bool isNullable,
             int? maxLength,
+            int? precision,
+            int? scale,
+            string commentLiteral,
+            bool? isUnicode,
             bool canWrite)
         {
             PropertyName = propertyName;
@@ -758,6 +851,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             IsArray = isArray;
             IsNullable = isNullable;
             MaxLength = maxLength;
+            Precision = precision;
+            Scale = scale;
+            CommentLiteral = commentLiteral;
+            IsUnicode = isUnicode;
             CanWrite = canWrite;
         }
 
@@ -786,6 +883,14 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public bool IsNullable { get; }
 
         public int? MaxLength { get; }
+
+        public int? Precision { get; }
+
+        public int? Scale { get; }
+
+        public string CommentLiteral { get; }
+
+        public bool? IsUnicode { get; }
 
         public bool CanWrite { get; }
     }

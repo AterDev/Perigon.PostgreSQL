@@ -80,8 +80,8 @@ public sealed class ScaffoldCodeGeneratorTests
 
         var user = Assert.Single(files, file => file.RelativePath == "User.cs").Content;
         Assert.Contains("using System;", user);
-        Assert.Contains("using EfCoreIndexAttribute = Microsoft.EntityFrameworkCore.IndexAttribute;", user);
-        Assert.Contains("[EfCoreIndexAttribute(nameof(Email), Name = \"uq_users_email\", IsUnique = true)]", user);
+        Assert.Contains("using PerigonIndexAttribute = Perigon.PostgreSQL.Attributes.IndexAttribute;", user);
+        Assert.Contains("[PerigonIndexAttribute(nameof(Email), Name = \"uq_users_email\", IsUnique = true)]", user);
         Assert.Contains("[Table(\"users\", Schema = \"public\")]", user);
         Assert.Contains("[Key]", user);
         Assert.Contains("[DatabaseGenerated(DatabaseGeneratedOption.Identity)]", user);
@@ -192,7 +192,6 @@ public sealed class ScaffoldCodeGeneratorTests
             ?? [];
 
         platformAssemblies.Add(MetadataReference.CreateFromFile(typeof(DbContext).Assembly.Location));
-        platformAssemblies.Add(MetadataReference.CreateFromFile(typeof(Microsoft.EntityFrameworkCore.IndexAttribute).Assembly.Location));
         return platformAssemblies
             .GroupBy(reference => reference.Display, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())

@@ -8,7 +8,7 @@ internal static class RelationshipConventions
         Justification = "Explicit ForeignKeyAttribute discovery is a fallback over known DbContext entity types only. Source-generated metadata avoids assembly scanning and convention foreign keys do not require this reflection path.")]
     public static IReadOnlyList<ForeignKeyModel> InferForeignKeys(IReadOnlyList<EntityModel> models)
     {
-        var result = new List<ForeignKeyModel>();
+        var result = models.SelectMany(static model => model.ForeignKeys).ToList();
         foreach (var dependent in models)
         {
             AddExplicitForeignKeys(models, dependent, result);
@@ -27,6 +27,11 @@ internal static class RelationshipConventions
                     SameStoreType(column.ClrType, model.PrimaryKey.ClrType));
 
                 if (principal?.PrimaryKey is null)
+                {
+                    continue;
+                }
+
+                if (result.Any(existing => existing.DependentEntity == dependent && existing.DependentColumn == column))
                 {
                     continue;
                 }

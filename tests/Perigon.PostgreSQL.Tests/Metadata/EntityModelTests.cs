@@ -72,7 +72,7 @@ public sealed class EntityModelTests
     }
 
     [Fact]
-    public void Ef_index_attribute_is_read_without_runtime_ef_dependency()
+    public void Built_in_index_attribute_is_read_without_runtime_ef_dependency()
     {
         var model = EntityModel.For<IndexedUser>();
 

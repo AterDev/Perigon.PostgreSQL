@@ -17,7 +17,11 @@ public sealed class ColumnModel
         bool isGenerated,
         bool isArray,
         bool isNullable,
-        int? maxLength = null)
+        int? maxLength = null,
+        int? precision = null,
+        int? scale = null,
+        string? comment = null,
+        bool? isUnicode = null)
         : this(
             property.DeclaringType ?? throw new ArgumentException("Property must have a declaring type.", nameof(property)),
             property.Name,
@@ -29,7 +33,11 @@ public sealed class ColumnModel
             isGenerated,
             isArray,
             isNullable,
-            maxLength)
+            maxLength,
+            precision,
+            scale,
+            comment,
+            isUnicode)
     {
         _property = property;
     }
@@ -45,7 +53,11 @@ public sealed class ColumnModel
         bool isGenerated,
         bool isArray,
         bool isNullable,
-        int? maxLength)
+        int? maxLength,
+        int? precision,
+        int? scale,
+        string? comment,
+        bool? isUnicode)
     {
         DeclaringType = declaringType;
         PropertyName = propertyName;
@@ -58,6 +70,10 @@ public sealed class ColumnModel
         IsArray = isArray;
         IsNullable = isNullable;
         MaxLength = maxLength;
+        Precision = precision;
+        Scale = scale;
+        Comment = comment;
+        IsUnicode = isUnicode;
     }
 
     public PropertyInfo Property
@@ -92,7 +108,33 @@ public sealed class ColumnModel
 
     public int? MaxLength { get; }
 
+    public int? Precision { get; }
+
+    public int? Scale { get; }
+
+    public string? Comment { get; }
+
+    public bool? IsUnicode { get; }
+
     public bool IsWritable => !IsIdentity && !IsGenerated;
+
+    internal ColumnModel Apply(PropertyConfiguration configuration)
+    {
+        return new ColumnModel(
+            Property,
+            configuration.ColumnName ?? ColumnName,
+            configuration.TypeName ?? TypeName,
+            IsPrimaryKey,
+            IsIdentity,
+            IsGenerated,
+            IsArray,
+            configuration.IsRequired == true ? false : IsNullable,
+            configuration.MaxLength ?? MaxLength,
+            configuration.Precision ?? Precision,
+            configuration.Scale ?? Scale,
+            configuration.Comment ?? Comment,
+            configuration.IsUnicode ?? IsUnicode);
+    }
 
     public static ColumnModel CreateGenerated<TDeclaring, TProperty>(
         string propertyName,
@@ -103,7 +145,11 @@ public sealed class ColumnModel
         bool isGenerated,
         bool isArray,
         bool isNullable,
-        int? maxLength = null)
+        int? maxLength = null,
+        int? precision = null,
+        int? scale = null,
+        string? comment = null,
+        bool? isUnicode = null)
     {
         return new ColumnModel(
             typeof(TDeclaring),
@@ -116,6 +162,10 @@ public sealed class ColumnModel
             isGenerated,
             isArray,
             isNullable,
-            maxLength);
+            maxLength,
+            precision,
+            scale,
+            comment,
+            isUnicode);
     }
 }

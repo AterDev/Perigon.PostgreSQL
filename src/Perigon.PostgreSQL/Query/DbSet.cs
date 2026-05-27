@@ -5,7 +5,12 @@ using Perigon.PostgreSQL.Query;
 
 namespace Perigon.PostgreSQL;
 
-public sealed class DbSet<T> : IOrderedQueryable<T> where T : class
+internal interface IEntityModelSource
+{
+    EntityModel Model { get; }
+}
+
+public sealed class DbSet<T> : IOrderedQueryable<T>, IEntityModelSource where T : class
 {
     private readonly PostgresQueryProvider _provider;
 

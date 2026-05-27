@@ -12,8 +12,10 @@ public sealed class EntityModel
         string? schema,
         string tableName,
         IReadOnlyList<ColumnModel> columns,
+        IReadOnlyList<ForeignKeyModel> foreignKeys,
         bool isView,
         IReadOnlyList<IndexDefinition> indexes,
+        string? comment,
         bool isGenerated)
     {
         ClrType = clrType;
@@ -21,9 +23,10 @@ public sealed class EntityModel
         TableName = tableName;
         Columns = columns;
         PrimaryKey = columns.FirstOrDefault(c => c.IsPrimaryKey);
-        ForeignKeys = Array.Empty<ForeignKeyModel>();
+        ForeignKeys = foreignKeys;
         Indexes = CreateIndexes(indexes);
         IsView = isView;
+        Comment = comment;
         IsGenerated = isGenerated;
     }
 
@@ -43,6 +46,8 @@ public sealed class EntityModel
     public IReadOnlyList<IndexModel> Indexes { get; }
 
     public bool IsView { get; }
+
+    public string? Comment { get; }
 
     public bool IsGenerated { get; }
 
@@ -74,7 +79,7 @@ public sealed class EntityModel
     public static EntityModel CreateGenerated<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string? schema, string tableName, IReadOnlyList<ColumnModel> columns)
         where T : class
     {
-        return CreateGenerated<T>(schema, tableName, columns, isView: false, Array.Empty<IndexDefinition>());
+        return CreateGenerated<T>(schema, tableName, columns, isView: false, Array.Empty<IndexDefinition>(), comment: null);
     }
 
     public static EntityModel CreateGenerated<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
@@ -82,10 +87,31 @@ public sealed class EntityModel
         string tableName,
         IReadOnlyList<ColumnModel> columns,
         bool isView,
-        IReadOnlyList<IndexDefinition> indexes)
+        IReadOnlyList<IndexDefinition> indexes,
+        string? comment = null)
         where T : class
     {
-        return new EntityModel(typeof(T), schema, tableName, columns, isView, indexes, isGenerated: true);
+        return new EntityModel(typeof(T), schema, tableName, columns, Array.Empty<ForeignKeyModel>(), isView, indexes, comment, isGenerated: true);
+    }
+
+    internal EntityModel Apply(
+        string? schema,
+        string? tableName,
+        IReadOnlyList<ColumnModel> columns,
+        string? comment,
+        IReadOnlyList<IndexDefinition> indexes,
+        IReadOnlyList<ForeignKeyModel>? foreignKeys)
+    {
+        return new EntityModel(
+            ClrType,
+            schema ?? Schema,
+            tableName ?? TableName,
+            columns,
+            foreignKeys ?? ForeignKeys,
+            IsView,
+            indexes,
+            comment ?? Comment,
+            IsGenerated);
     }
 
     private static EntityModel Build(
@@ -99,6 +125,7 @@ public sealed class EntityModel
         var perigonTable = entityType.GetCustomAttribute<TableAttribute>();
         var schemaTable = entityType.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.TableAttribute>();
         var view = entityType.GetCustomAttribute<ViewAttribute>();
+        var entityComment = ReadComment(entityType.GetCustomAttributes(inherit: false));
         var tableName = view?.Name ?? perigonTable?.Name ?? schemaTable?.Name ?? NamingConventions.DefaultTableName(entityType);
         var schema = view?.Schema ?? perigonTable?.Schema ?? schemaTable?.Schema;
         var nullability = new NullabilityInfoContext();
@@ -126,6 +153,10 @@ public sealed class EntityModel
                 maxLength = property.GetCustomAttribute<System.ComponentModel.DataAnnotations.StringLengthAttribute>()?.MaximumLength;
             }
 
+            var precision = ReadPrecision(property.GetCustomAttributes(inherit: false), out var scale);
+            var comment = ReadComment(property.GetCustomAttributes(inherit: false));
+            var isUnicode = ReadUnicode(property.GetCustomAttributes(inherit: false));
+
             columns.Add(new ColumnModel(
                 property,
                 perigonColumn?.Name ?? schemaColumn?.Name ?? NamingConventions.DefaultColumnName(property.Name),
@@ -135,10 +166,14 @@ public sealed class EntityModel
                 perigonColumn?.IsGenerated == true || databaseGeneratedOption == System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedOption.Computed,
                 perigonColumn?.IsArray == true || IsArrayLike(property.PropertyType),
                 IsNullable(property, nullability),
-                maxLength));
+                maxLength,
+                precision,
+                scale,
+                comment,
+                isUnicode));
         }
 
-        return new EntityModel(entityType, schema, tableName, columns, view is not null, ReadIndexDefinitions(entityType), isGenerated: false);
+            return new EntityModel(entityType, schema, tableName, columns, Array.Empty<ForeignKeyModel>(), view is not null, ReadIndexDefinitions(entityType), entityComment, isGenerated: false);
     }
 
     private IReadOnlyList<IndexModel> CreateIndexes(IReadOnlyList<IndexDefinition> definitions)
@@ -170,7 +205,7 @@ public sealed class EntityModel
     [UnconditionalSuppressMessage(
         "Trimming",
         "IL2075",
-        Justification = "This reflection path only reads optional EF-compatible attributes in the non-generated metadata fallback. Source-generated models provide index definitions without this reflection path.")]
+        Justification = "This reflection path only reads optional index metadata attributes in the non-generated metadata fallback. Source-generated models provide index definitions without this reflection path.")]
     private static IReadOnlyList<IndexDefinition> ReadIndexDefinitions(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
     {
@@ -178,7 +213,8 @@ public sealed class EntityModel
         foreach (var attribute in entityType.GetCustomAttributes(inherit: false))
         {
             var type = attribute.GetType();
-            if (!string.Equals(type.FullName, "Microsoft.EntityFrameworkCore.IndexAttribute", StringComparison.Ordinal))
+            if (!string.Equals(type.FullName, "Perigon.PostgreSQL.Attributes.IndexAttribute", StringComparison.Ordinal) &&
+                !string.Equals(type.FullName, "Microsoft.EntityFrameworkCore.IndexAttribute", StringComparison.Ordinal))
             {
                 continue;
             }
@@ -207,6 +243,75 @@ public sealed class EntityModel
     {
         return type.IsArray && type != typeof(byte[]) ||
                (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>));
+    }
+
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2075",
+        Justification = "This reflection path only reads optional precision attributes in the non-generated metadata fallback.")]
+    private static int? ReadPrecision(object[] attributes, out int? scale)
+    {
+        scale = null;
+        var attribute = attributes.FirstOrDefault(static item =>
+        {
+            var fullName = item.GetType().FullName;
+            return fullName == "Perigon.PostgreSQL.Attributes.PrecisionAttribute" ||
+                   fullName == "Microsoft.EntityFrameworkCore.PrecisionAttribute";
+        });
+
+        if (attribute is null)
+        {
+            return null;
+        }
+
+        var type = attribute.GetType();
+        var precision = type.GetProperty("Precision")?.GetValue(attribute) as int?;
+        scale = type.GetProperty("Scale")?.GetValue(attribute) as int?;
+        return precision;
+    }
+
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2075",
+        Justification = "This reflection path only reads optional comment attributes in the non-generated metadata fallback.")]
+    private static string? ReadComment(object[] attributes)
+    {
+        var attribute = attributes.FirstOrDefault(static item =>
+        {
+            var fullName = item.GetType().FullName;
+            return fullName == "Perigon.PostgreSQL.Attributes.CommentAttribute" ||
+                   fullName == "Microsoft.EntityFrameworkCore.CommentAttribute";
+        });
+
+        if (attribute is null)
+        {
+            return null;
+        }
+
+        var type = attribute.GetType();
+        return type.GetProperty("Text")?.GetValue(attribute) as string ??
+               type.GetProperty("Comment")?.GetValue(attribute) as string;
+    }
+
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2075",
+        Justification = "This reflection path only reads optional unicode attributes in the non-generated metadata fallback.")]
+    private static bool? ReadUnicode(object[] attributes)
+    {
+        var attribute = attributes.FirstOrDefault(static item =>
+        {
+            var fullName = item.GetType().FullName;
+            return fullName == "Perigon.PostgreSQL.Attributes.UnicodeAttribute" ||
+                   fullName == "Microsoft.EntityFrameworkCore.UnicodeAttribute";
+        });
+
+        if (attribute is null)
+        {
+            return null;
+        }
+
+        return attribute.GetType().GetProperty("IsUnicode")?.GetValue(attribute) as bool?;
     }
 
     private static bool IsNotMapped(MemberInfo member)

@@ -53,8 +53,7 @@ internal static class StructuredSqlBuilder
             }
         }
 
-        var entityType = FindRootEntityType(expression);
-        return SelectSqlBuilder.Build(EntityModel.For(entityType), QueryModelFactory.Create(expression));
+        return SelectSqlBuilder.Build(ResolveEntityModel(expression), QueryModelFactory.Create(expression));
     }
 
     private static BoundSql WithDistinct(BoundSql sql)
@@ -203,8 +202,7 @@ internal static class StructuredSqlBuilder
 
     private static BoundSql BuildProjection(Expression sourceExpression, LambdaExpression selector)
     {
-        var entityType = FindRootEntityType(sourceExpression);
-        var model = EntityModel.For(entityType);
+        var model = ResolveEntityModel(sourceExpression);
         var parameters = new ParameterBag();
         const string alias = "e";
         var selections = ReadSelections(selector.Body, new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>
@@ -223,10 +221,8 @@ internal static class StructuredSqlBuilder
     {
         var outerExpression = join.Arguments[0];
         var innerExpression = join.Arguments[1];
-        var outerType = FindRootEntityType(outerExpression);
-        var innerType = FindRootEntityType(innerExpression);
-        var outerModel = EntityModel.For(outerType);
-        var innerModel = EntityModel.For(innerType);
+        var outerModel = ResolveEntityModel(outerExpression);
+        var innerModel = ResolveEntityModel(innerExpression);
         var outerKey = UnquoteLambda(join.Arguments[2]);
         var innerKey = UnquoteLambda(join.Arguments[3]);
         var resultSelector = UnquoteLambda(join.Arguments[4]);
@@ -274,10 +270,8 @@ internal static class StructuredSqlBuilder
     {
         var outerExpression = groupJoin.Arguments[0];
         var innerExpression = groupJoin.Arguments[1];
-        var outerType = FindRootEntityType(outerExpression);
-        var innerType = FindRootEntityType(innerExpression);
-        var outerModel = EntityModel.For(outerType);
-        var innerModel = EntityModel.For(innerType);
+        var outerModel = ResolveEntityModel(outerExpression);
+        var innerModel = ResolveEntityModel(innerExpression);
         var outerKey = UnquoteLambda(groupJoin.Arguments[2]);
         var innerKey = UnquoteLambda(groupJoin.Arguments[3]);
         var groupResultSelector = UnquoteLambda(groupJoin.Arguments[4]);
@@ -331,8 +325,7 @@ internal static class StructuredSqlBuilder
     private static GroupByBuildResult BuildGroupByQuery(MethodCallExpression groupBy, LambdaExpression selector)
     {
         var sourceExpression = groupBy.Arguments[0];
-        var entityType = FindRootEntityType(sourceExpression);
-        var model = EntityModel.For(entityType);
+        var model = ResolveEntityModel(sourceExpression);
         var keySelector = UnquoteLambda(groupBy.Arguments[1]);
         var parameters = new ParameterBag();
         const string alias = "e";
@@ -908,6 +901,22 @@ internal static class StructuredSqlBuilder
         }
 
         throw new UnsupportedQueryExpressionException($"Cannot find query root for expression '{expression}'.");
+    }
+
+    private static EntityModel ResolveEntityModel(Expression expression)
+    {
+        expression = StripQuote(expression);
+        if (expression is ConstantExpression { Value: IEntityModelSource source })
+        {
+            return source.Model;
+        }
+
+        if (expression is MethodCallExpression call && call.Arguments.Count > 0)
+        {
+            return ResolveEntityModel(call.Arguments[0]);
+        }
+
+        return EntityModel.For(FindRootEntityType(expression));
     }
 
     private static LambdaExpression UnquoteLambda(Expression expression)
