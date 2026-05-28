@@ -86,11 +86,17 @@ public sealed class User
 
 ```csharp
 using Perigon.PostgreSQL;
+using Perigon.PostgreSQL.Options;
 
 public sealed class AppDbContext : DbContext
 {
+	public AppDbContext(DbContextOptions<AppDbContext> options)
+		: base(options)
+	{
+	}
+
 	public AppDbContext(string connectionString)
-		: base(options => options.UsePostgres(connectionString))
+		: base(options => options.UseNpgsql(connectionString))
 	{
 	}
 
@@ -131,7 +137,7 @@ var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("Postgres")
 	?? "Host=localhost;Port=5432;Database=app;Username=postgres;Password=postgres";
 
-builder.Services.AddDbContext(_ => new AppDbContext(connectionString));
+builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
 
 var app = builder.Build();
 

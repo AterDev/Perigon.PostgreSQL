@@ -8,7 +8,7 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <PackageId>Perigon.PostgreSQL</PackageId>
     <Title>Perigon.PostgreSQL</Title>
-    <Version>0.1.0</Version>
+    <Version>0.1.2</Version>
     <Authors>AterDev</Authors>
     <Company>AterDev</Company>
     <Description>PostgreSQL-only NativeAOT-friendly data access library with deterministic SQL, LINQ
@@ -20,9 +20,10 @@
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageIcon>perigon_logo.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Preview 2 expands real PostgreSQL integration coverage, adds raw SQL and
-      source generator unit tests, and fixes JSONB containment SQL casting. See RELEASE_NOTES.md for
-      details.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.2 renames PostgresDbContext to DbContext, adds
+      ASP.NET Core registration support, expands PostgreSQL schema/scaffolding
+      features, and improves fluent metadata/type mapping support. See
+      RELEASE_NOTES.md for details.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

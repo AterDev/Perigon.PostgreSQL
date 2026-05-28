@@ -30,6 +30,12 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         _options = builder.Build();
     }
 
+    protected DbContext(DbContextOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        _options = options;
+    }
+
     protected virtual void OnConfiguring(DbContextOptionsBuilder builder)
     {
     }

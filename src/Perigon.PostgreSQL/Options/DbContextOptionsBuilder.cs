@@ -13,11 +13,21 @@ public sealed class DbContextOptionsBuilder
         return this;
     }
 
+    public DbContextOptionsBuilder UseNpgsql(string connectionString)
+    {
+        return UsePostgres(connectionString);
+    }
+
     public DbContextOptionsBuilder UsePostgres(NpgsqlDataSource dataSource)
     {
         _options.DataSource = dataSource;
         _options.ConnectionString = null;
         return this;
+    }
+
+    public DbContextOptionsBuilder UseNpgsql(NpgsqlDataSource dataSource)
+    {
+        return UsePostgres(dataSource);
     }
 
     public DbContextOptionsBuilder EnableSensitiveLogging(bool enabled = true)
@@ -29,5 +39,16 @@ public sealed class DbContextOptionsBuilder
     internal DbContextOptions Build()
     {
         return _options;
+    }
+
+    internal DbContextOptions<TContext> Build<TContext>()
+        where TContext : DbContext
+    {
+        return new DbContextOptions<TContext>
+        {
+            ConnectionString = _options.ConnectionString,
+            DataSource = _options.DataSource,
+            SensitiveLoggingEnabled = _options.SensitiveLoggingEnabled
+        };
     }
 }

@@ -1,12 +1,18 @@
 using Perigon.PostgreSQL;
 using Perigon.PostgreSQL.AspNetCoreSample.Models;
+using Perigon.PostgreSQL.Options;
 
 namespace Perigon.PostgreSQL.AspNetCoreSample.Data;
 
 public sealed class SampleDbContext : DbContext
 {
+    public SampleDbContext(DbContextOptions<SampleDbContext> options)
+        : base(options)
+    {
+    }
+
     public SampleDbContext(string connectionString)
-        : base(builder => builder.UsePostgres(connectionString))
+        : base(builder => builder.UseNpgsql(connectionString))
     {
     }
 

@@ -31,13 +31,19 @@ public sealed class ScaffoldCodeGenerator
     {
         var builder = new StringBuilder();
         builder.AppendLine("using Perigon.PostgreSQL;");
+        builder.AppendLine("using Perigon.PostgreSQL.Options;");
         builder.AppendLine();
         builder.AppendLine($"namespace {_options.Namespace};");
         builder.AppendLine();
         builder.AppendLine($"public partial class {_options.ContextName} : DbContext");
         builder.AppendLine("{");
+        builder.AppendLine($"    public {_options.ContextName}(DbContextOptions<{_options.ContextName}> options)");
+        builder.AppendLine("        : base(options)");
+        builder.AppendLine("    {");
+        builder.AppendLine("    }");
+        builder.AppendLine();
         builder.AppendLine($"    public {_options.ContextName}(string connectionString)");
-        builder.AppendLine("        : base(builder => builder.UsePostgres(connectionString))");
+        builder.AppendLine("        : base(builder => builder.UseNpgsql(connectionString))");
         builder.AppendLine("    {");
         builder.AppendLine("    }");
         builder.AppendLine();
