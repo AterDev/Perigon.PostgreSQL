@@ -11,5 +11,11 @@ public sealed class TestDbContext : DbContext
 
     public DbSet<RichUser> RichUsers => Set<RichUser>();
 
+    public DbSet<StatisticOrder> StatisticOrders => Set<StatisticOrder>();
+
+    public DbSet<StatisticOffsetOrder> StatisticOffsetOrders => Set<StatisticOffsetOrder>();
+
+    public DbSet<StatisticOffsetCheckpoint> StatisticOffsetCheckpoints => Set<StatisticOffsetCheckpoint>();
+
     public DbSet<Blog> Blogs => Set<Blog>();
 }

@@ -416,25 +416,10 @@ internal static class StructuredSqlBuilder
         IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)> aliases,
         IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)>? transparentAliases = null)
     {
-        expression = StripConvert(expression);
-        if (expression is MemberExpression member && member.Expression is ParameterExpression parameter &&
-            aliases.TryGetValue(parameter, out var target))
-        {
-            var column = target.Model.GetColumn(member.Member.Name);
-            return $"{target.Alias}.{Identifier.Quote(column.ColumnName)}";
-        }
-
-        if (expression is MemberExpression nested &&
-            nested.Expression is MemberExpression transparentMember &&
-            transparentMember.Expression is ParameterExpression transparentParameter &&
-            transparentAliases is not null &&
-            transparentAliases.TryGetValue((transparentParameter, transparentMember.Member.Name), out var transparentTarget))
-        {
-            var column = transparentTarget.Model.GetColumn(nested.Member.Name);
-            return $"{transparentTarget.Alias}.{Identifier.Quote(column.ColumnName)}";
-        }
-
-        throw new UnsupportedQueryExpressionException($"Only direct mapped member access is supported here. Expression: '{expression}'.");
+        return TranslateSqlScalar(
+            expression,
+            member => ResolveMappedMemberSql(member, aliases, transparentAliases),
+            allowDateTimeConstructor: false);
     }
 
     private static IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)> ReadTransparentAliases(
@@ -462,10 +447,16 @@ internal static class StructuredSqlBuilder
 
     private static string TranslateSingleMember(Expression expression, ParameterExpression parameter, EntityModel model, string alias)
     {
-        return TranslateMember(expression, new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>
-        {
-            [parameter] = (model, alias)
-        });
+        return TranslateSqlScalar(
+            expression,
+            member => ResolveMappedMemberSql(
+                member,
+                new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>
+                {
+                    [parameter] = (model, alias)
+                },
+                transparentAliases: null),
+            allowDateTimeConstructor: false);
     }
 
     private static GroupKeySql ReadGroupKeySql(Expression expression, ParameterExpression parameter, EntityModel model, string alias)
@@ -555,7 +546,238 @@ internal static class StructuredSqlBuilder
             return new GroupProjection(outputName, TranslateAggregate(aggregate, model, alias));
         }
 
+        if (ContainsGroupReference(argument, groupParameter))
+        {
+            return new GroupProjection(outputName, TranslateGroupScalar(argument, groupParameter, keySql));
+        }
+
         throw new UnsupportedQueryExpressionException($"GroupBy projection '{argument}' is not supported.");
+    }
+
+    private static bool ContainsGroupReference(Expression expression, ParameterExpression groupParameter)
+    {
+        expression = StripConvert(expression);
+
+        return expression switch
+        {
+            MemberExpression member when member.Expression == groupParameter => true,
+            MemberExpression member => member.Expression is not null && ContainsGroupReference(member.Expression, groupParameter),
+            BinaryExpression binary => ContainsGroupReference(binary.Left, groupParameter) || ContainsGroupReference(binary.Right, groupParameter),
+            NewExpression @new => @new.Arguments.Any(argument => ContainsGroupReference(argument, groupParameter)),
+            UnaryExpression unary => ContainsGroupReference(unary.Operand, groupParameter),
+            _ => false
+        };
+    }
+
+    private static string TranslateGroupScalar(Expression expression, ParameterExpression groupParameter, GroupKeySql keySql)
+    {
+        return TranslateSqlScalar(
+            expression,
+            member => ResolveGroupKeyMemberSql(member, groupParameter, keySql),
+            allowDateTimeConstructor: true);
+    }
+
+    private static string? ResolveMappedMemberSql(
+        MemberExpression member,
+        IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)> aliases,
+        IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)>? transparentAliases)
+    {
+        if (member.Expression is ParameterExpression parameter && aliases.TryGetValue(parameter, out var target))
+        {
+            var column = target.Model.GetColumn(member.Member.Name);
+            return $"{target.Alias}.{Identifier.Quote(column.ColumnName)}";
+        }
+
+        if (member.Expression is MemberExpression transparentMember &&
+            transparentMember.Expression is ParameterExpression transparentParameter &&
+            transparentAliases is not null &&
+            transparentAliases.TryGetValue((transparentParameter, transparentMember.Member.Name), out var transparentTarget))
+        {
+            var column = transparentTarget.Model.GetColumn(member.Member.Name);
+            return $"{transparentTarget.Alias}.{Identifier.Quote(column.ColumnName)}";
+        }
+
+        return null;
+    }
+
+    private static string? ResolveGroupKeyMemberSql(MemberExpression member, ParameterExpression groupParameter, GroupKeySql keySql)
+    {
+        if (member.Expression == groupParameter && member.Member.Name == "Key")
+        {
+            if (keySql.Columns.Count != 1)
+            {
+                throw new UnsupportedQueryExpressionException("Project individual key members for multi-key GroupBy.");
+            }
+
+            return keySql.Columns[0];
+        }
+
+        if (member.Expression is MemberExpression { Member.Name: "Key", Expression: var keyTarget } &&
+            keyTarget == groupParameter &&
+            keySql.NamedColumns.TryGetValue(member.Member.Name, out var keyColumn))
+        {
+            return keyColumn;
+        }
+
+        return null;
+    }
+
+    private static string TranslateSqlScalar(
+        Expression expression,
+        Func<MemberExpression, string?> memberResolver,
+        bool allowDateTimeConstructor)
+    {
+        expression = StripConvert(expression);
+
+        if (expression is MemberExpression member)
+        {
+            if (memberResolver(member) is { } resolvedMember)
+            {
+                return resolvedMember;
+            }
+
+            if (TryTranslateTemporalMember(member, memberResolver, out var temporalSql))
+            {
+                return temporalSql;
+            }
+
+            if (TryTranslateEvaluatedLiteral(member, out var literalSql))
+            {
+                return literalSql;
+            }
+
+            throw new UnsupportedQueryExpressionException($"Only direct mapped member access is supported here. Expression: '{expression}'.");
+        }
+
+        if (expression is BinaryExpression binary && IsSupportedArithmeticOperator(binary.NodeType))
+        {
+            var left = TranslateSqlScalar(binary.Left, memberResolver, allowDateTimeConstructor);
+            var right = TranslateSqlScalar(binary.Right, memberResolver, allowDateTimeConstructor);
+            return $"({left} {ArithmeticOperator(binary.NodeType)} {right})";
+        }
+
+        if (allowDateTimeConstructor && expression is NewExpression @new && IsThreePartDateTimeConstructor(@new))
+        {
+            var year = TranslateSqlScalar(@new.Arguments[0], memberResolver, allowDateTimeConstructor);
+            var month = TranslateSqlScalar(@new.Arguments[1], memberResolver, allowDateTimeConstructor);
+            var day = TranslateSqlScalar(@new.Arguments[2], memberResolver, allowDateTimeConstructor);
+            return $"make_timestamp({year}, {month}, {day}, 0, 0, 0)";
+        }
+
+        if (allowDateTimeConstructor && expression is NewExpression dateTimeOffsetNew && IsUtcDateTimeOffsetConstructor(dateTimeOffsetNew))
+        {
+            var year = TranslateSqlScalar(dateTimeOffsetNew.Arguments[0], memberResolver, allowDateTimeConstructor);
+            var month = TranslateSqlScalar(dateTimeOffsetNew.Arguments[1], memberResolver, allowDateTimeConstructor);
+            var day = TranslateSqlScalar(dateTimeOffsetNew.Arguments[2], memberResolver, allowDateTimeConstructor);
+            var hour = TranslateSqlScalar(dateTimeOffsetNew.Arguments[3], memberResolver, allowDateTimeConstructor);
+            var minute = TranslateSqlScalar(dateTimeOffsetNew.Arguments[4], memberResolver, allowDateTimeConstructor);
+            var second = TranslateSqlScalar(dateTimeOffsetNew.Arguments[5], memberResolver, allowDateTimeConstructor);
+            return $"make_timestamptz({year}, {month}, {day}, {hour}, {minute}, {second}, 'UTC')";
+        }
+
+        if (expression is ConstantExpression constant && TryFormatLiteral(constant.Value, out var constantSql))
+        {
+            return constantSql;
+        }
+
+        throw new UnsupportedQueryExpressionException($"Expression '{expression}' is not supported here.");
+    }
+
+    private static bool TryTranslateTemporalMember(
+        MemberExpression member,
+        Func<MemberExpression, string?> memberResolver,
+        [NotNullWhen(true)] out string? sql)
+    {
+        sql = null;
+        if (member.Expression is null)
+        {
+            return false;
+        }
+
+        var effectiveType = Nullable.GetUnderlyingType(member.Expression.Type) ?? member.Expression.Type;
+        if (effectiveType != typeof(DateTime) && effectiveType != typeof(DateTimeOffset))
+        {
+            return false;
+        }
+
+        var sourceSql = TranslateSqlScalar(member.Expression, memberResolver, allowDateTimeConstructor: false);
+        sql = member.Member.Name switch
+        {
+            nameof(DateTime.Date) => $"date_trunc('day', {sourceSql})",
+            nameof(DateTime.Year) => $"extract(year from {sourceSql})::int",
+            nameof(DateTime.Month) => $"extract(month from {sourceSql})::int",
+            nameof(DateTime.Day) => $"extract(day from {sourceSql})::int",
+            _ => null
+        };
+
+        return sql is not null;
+    }
+
+    private static bool TryTranslateEvaluatedLiteral(MemberExpression member, [NotNullWhen(true)] out string? sql)
+    {
+        sql = null;
+        try
+        {
+            return TryFormatLiteral(ExpressionValueReader.Read(member), out sql);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryFormatLiteral(object? value, [NotNullWhen(true)] out string? sql)
+    {
+        sql = value switch
+        {
+            int intValue => intValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            long longValue => longValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            short shortValue => shortValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            byte byteValue => byteValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            decimal decimalValue => decimalValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            double doubleValue => doubleValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            float floatValue => floatValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => null
+        };
+
+        return sql is not null;
+    }
+
+    private static bool IsSupportedArithmeticOperator(ExpressionType nodeType)
+    {
+        return nodeType is ExpressionType.Add or ExpressionType.Subtract or ExpressionType.Multiply or ExpressionType.Divide;
+    }
+
+    private static string ArithmeticOperator(ExpressionType nodeType)
+    {
+        return nodeType switch
+        {
+            ExpressionType.Add => "+",
+            ExpressionType.Subtract => "-",
+            ExpressionType.Multiply => "*",
+            ExpressionType.Divide => "/",
+            _ => throw new UnsupportedQueryExpressionException($"Arithmetic operator '{nodeType}' is not supported.")
+        };
+    }
+
+    private static bool IsThreePartDateTimeConstructor(NewExpression @new)
+    {
+        return @new.Constructor?.DeclaringType == typeof(DateTime) && @new.Arguments.Count == 3;
+    }
+
+    private static bool IsUtcDateTimeOffsetConstructor(NewExpression @new)
+    {
+        if (@new.Constructor?.DeclaringType != typeof(DateTimeOffset) || @new.Arguments.Count != 7)
+        {
+            return false;
+        }
+
+        if (@new.Arguments[6] is not MemberExpression member || member.Member.Name != nameof(TimeSpan.Zero))
+        {
+            return false;
+        }
+
+        return member.Expression is null && member.Member.DeclaringType == typeof(TimeSpan);
     }
 
     private static string TranslateAggregate(MethodCallExpression aggregate, EntityModel model, string alias)

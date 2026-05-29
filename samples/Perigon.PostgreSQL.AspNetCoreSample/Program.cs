@@ -46,6 +46,10 @@ app.MapGet("/", () => Results.Ok(new
         "GET /reports/user-blogs",
         "GET /stats/users-by-status",
         "GET /stats/distinct-active-by-status",
+        "GET /stats/users-created/daily?status=active&from=2026-01-01T00:00:00Z",
+        "GET /stats/users-created/monthly?status=active&from=2026-01-01T00:00:00Z",
+        "GET /stats/users-created/quarterly?status=active&from=2026-01-01T00:00:00Z",
+        "GET /stats/users-created/range-offset?status=active&from=2026-01-01T08:00:00+08:00&to=2026-02-01T08:00:00+08:00",
         "GET /sql-preview/join",
         "GET /sql-preview/left-join",
         "GET /sql-preview/group-by"
@@ -62,7 +66,7 @@ app.MapPost("/seed", async (SampleDbContext db) =>
             Age = 31,
             IsActive = true,
             Status = "active",
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = new DateTime(2026, 1, 15, 8, 30, 0, DateTimeKind.Utc),
             Tags = ["developer", "postgres"],
             ProfileJson = """{"level":3,"team":"platform"}"""
         },
@@ -72,7 +76,7 @@ app.MapPost("/seed", async (SampleDbContext db) =>
             Age = 42,
             IsActive = true,
             Status = "active",
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = new DateTime(2026, 1, 15, 16, 45, 0, DateTimeKind.Utc),
             Tags = ["ops", "postgres"],
             ProfileJson = """{"level":2,"team":"infra"}"""
         },
@@ -82,14 +86,24 @@ app.MapPost("/seed", async (SampleDbContext db) =>
             Age = 27,
             IsActive = false,
             Status = "paused",
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = new DateTime(2026, 2, 20, 9, 0, 0, DateTimeKind.Utc),
             Tags = ["analytics"],
             ProfileJson = """{"level":1,"team":"data"}"""
+        },
+        new SampleUser
+        {
+            UserName = "dave",
+            Age = 38,
+            IsActive = true,
+            Status = "active",
+            CreatedAt = new DateTime(2026, 6, 12, 12, 0, 0, DateTimeKind.Utc),
+            Tags = ["sales", "postgres"],
+            ProfileJson = """{"level":4,"team":"growth"}"""
         }
     };
 
     await db.Users.UpsertManyAsync(users, u => u.UserName);
-    var seededUsers = await db.Users.Where(u => u.UserName == "alice" || u.UserName == "bob" || u.UserName == "carol").ToListAsync();
+    var seededUsers = await db.Users.Where(u => u.UserName == "alice" || u.UserName == "bob" || u.UserName == "carol" || u.UserName == "dave").ToListAsync();
     var alice = seededUsers.Single(u => u.UserName == "alice");
     var bob = seededUsers.Single(u => u.UserName == "bob");
 
@@ -424,6 +438,68 @@ app.MapGet("/stats/distinct-active-by-status", async (SampleDbContext db) =>
     return Results.Ok(rows);
 });
 
+app.MapGet("/stats/users-created/daily", async (SampleDbContext db, string? status, DateTime? from) =>
+{
+    var rows = await BuildUserCreatedQuery(db, status, from)
+        .GroupBy(u => u.CreatedAt.Date)
+        .Select(g => new UserCreatedBucketStat
+        {
+            Date = g.Key,
+            Count = g.LongCount(),
+            AverageAge = g.Average(u => u.Age)
+        })
+        .OrderBy(x => x.Date)
+        .ToListAsync();
+    return Results.Ok(rows);
+});
+
+app.MapGet("/stats/users-created/monthly", async (SampleDbContext db, string? status, DateTime? from) =>
+{
+    var rows = await BuildUserCreatedQuery(db, status, from)
+        .GroupBy(u => new { u.CreatedAt.Year, u.CreatedAt.Month })
+        .Select(g => new UserCreatedBucketStat
+        {
+            Date = new DateTime(g.Key.Year, g.Key.Month, 1),
+            Count = g.LongCount(),
+            AverageAge = g.Average(u => u.Age)
+        })
+        .OrderBy(x => x.Date)
+        .ToListAsync();
+    return Results.Ok(rows);
+});
+
+app.MapGet("/stats/users-created/quarterly", async (SampleDbContext db, string? status, DateTime? from) =>
+{
+    var rows = await BuildUserCreatedQuery(db, status, from)
+        .GroupBy(u => new { u.CreatedAt.Year, Quarter = (u.CreatedAt.Month - 1) / 3 + 1 })
+        .Select(g => new UserCreatedBucketStat
+        {
+            Date = new DateTime(g.Key.Year, (g.Key.Quarter - 1) * 3 + 1, 1),
+            Count = g.LongCount(),
+            AverageAge = g.Average(u => u.Age)
+        })
+        .OrderBy(x => x.Date)
+        .ToListAsync();
+    return Results.Ok(rows);
+});
+
+app.MapGet("/stats/users-created/range-offset", async (SampleDbContext db, string? status, DateTimeOffset? from, DateTimeOffset? to) =>
+{
+    var query = BuildUserCreatedQuery(db, status, from?.UtcDateTime, to?.UtcDateTime);
+    var users = await query
+        .OrderBy(u => u.UserName)
+        .ToListAsync();
+
+    return Results.Ok(new UserCreatedRangeStat
+    {
+        FromUtc = from?.ToUniversalTime(),
+        ToUtc = to?.ToUniversalTime(),
+        Count = users.LongCount(),
+        AverageAge = users.Count == 0 ? null : users.Average(u => (double)u.Age),
+        UserNames = users.Select(u => u.UserName).ToArray()
+    });
+});
+
 app.MapGet("/sql-preview/join", (SampleDbContext db) =>
 {
     var sql = db.Users
@@ -453,3 +529,25 @@ app.MapGet("/sql-preview/group-by", (SampleDbContext db) =>
 });
 
 app.Run();
+
+static IQueryable<SampleUser> BuildUserCreatedQuery(SampleDbContext db, string? status, DateTime? from, DateTime? to = null)
+{
+    IQueryable<SampleUser> query = db.Users;
+
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        query = query.Where(u => u.Status == status);
+    }
+
+    if (from is not null)
+    {
+        query = query.Where(u => u.CreatedAt >= from.Value);
+    }
+
+    if (to is not null)
+    {
+        query = query.Where(u => u.CreatedAt < to.Value);
+    }
+
+    return query;
+}

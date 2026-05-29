@@ -131,6 +131,67 @@ public sealed class AdvancedWhereSqlTests
     }
 
     [Fact]
+    public void DateTimeOffset_range_uses_two_parameters_in_order()
+    {
+        using var db = new TestDbContext();
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero);
+
+        var sql = db.StatisticOffsetOrders
+            .Where(o => o.OrderTime >= start && o.OrderTime < end)
+            .ToQuerySql();
+
+        Assert.Contains("e.\"order_time\" >= $1", sql.CommandText);
+        Assert.Contains("e.\"order_time\" < $2", sql.CommandText);
+        Assert.Equal([start, end], sql.Parameters.Select(p => p.Value).ToArray());
+    }
+
+    [Fact]
+    public void DateTimeOffset_range_preserves_equivalent_instants_with_original_offsets()
+    {
+        using var db = new TestDbContext();
+        var start = new DateTimeOffset(2026, 1, 1, 8, 0, 0, TimeSpan.FromHours(8));
+        var end = new DateTimeOffset(2026, 1, 2, 8, 0, 0, TimeSpan.FromHours(8));
+
+        var sql = db.StatisticOffsetOrders
+            .Where(o => o.OrderTime >= start && o.OrderTime < end)
+            .ToQuerySql();
+
+        Assert.Equal(start, sql.Parameters[0].Value);
+        Assert.Equal(end, sql.Parameters[1].Value);
+    }
+
+    [Fact]
+    public void Nullable_DateTimeOffset_has_value_and_half_open_range_translate_correctly()
+    {
+        using var db = new TestDbContext();
+        var start = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero);
+
+        var sql = db.StatisticOffsetCheckpoints
+            .Where(c => c.ProcessedAt.HasValue && c.ProcessedAt.Value >= start && c.ProcessedAt.Value < end)
+            .ToQuerySql();
+
+        Assert.Contains("e.\"processed_at\" IS NOT NULL", sql.CommandText);
+        Assert.Contains("e.\"processed_at\" >= $1", sql.CommandText);
+        Assert.Contains("e.\"processed_at\" < $2", sql.CommandText);
+        Assert.Equal([start, end], sql.Parameters.Select(p => p.Value).ToArray());
+    }
+
+    [Fact]
+    public void Nullable_DateTimeOffset_null_comparison_uses_is_null()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.StatisticOffsetCheckpoints
+            .Where(c => c.ProcessedAt == null)
+            .ToQuerySql();
+
+        Assert.Contains("e.\"processed_at\" IS NULL", sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
+
+    [Fact]
     public void Multiple_where_calls_preserve_parameter_order()
     {
         using var db = new TestDbContext();

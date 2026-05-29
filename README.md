@@ -96,13 +96,32 @@ public sealed class AppDbContext : DbContext
 	}
 
 	public AppDbContext(string connectionString)
-		: base(options => options.UseNpgsql(connectionString))
+		: base(options => options
+			.UseNpgsql(connectionString)
+			.UseConnectionTimeout(TimeSpan.FromSeconds(5))
+			.UseCommandTimeout(TimeSpan.FromSeconds(30))
+			.EnableConnectionPooling()
+			.UseMinPoolSize(5)
+			.UseMaxPoolSize(50))
 	{
 	}
 
 	public DbSet<User> Users => Set<User>();
+
+	protected override void OnModelCreating(ModelBuilder modelBuilder)
+	{
+		modelBuilder.Entity<User>(entity =>
+		{
+			entity.ToTable("users", "app");
+			entity.Property(user => user.UserName).HasColumnName("user_name").IsRequired();
+			entity.Property(user => user.ProfileJson).HasColumnType("jsonb");
+			entity.HasIndex(user => user.UserName).HasDatabaseName("uq_users_user_name").IsUnique();
+		});
+	}
 }
 ```
+
+When you configure by connection string, Perigon applies timeout and pooling settings while building the underlying `NpgsqlDataSource`. If you do not set these options, the original Npgsql defaults remain in effect. Npgsql pooling is enabled by default, and you can tune it with `EnableConnectionPooling`, `UseMinPoolSize`, and `UseMaxPoolSize`. If you pass a prebuilt `NpgsqlDataSource`, that external data source configuration is used as-is.
 
 ## Console App Example
 
@@ -200,6 +219,19 @@ var name = "alice";
 var users = await db.SqlQuery<User>($"SELECT * FROM users WHERE user_name = {name}")
 	.ToListAsync();
 ```
+
+Time-range filters support both `DateTime` and `DateTimeOffset`. PostgreSQL `timestamp with time zone` stores instants, not the original offset, so Perigon normalizes `DateTimeOffset` parameters to UTC before sending them to Npgsql and materializes query results back as UTC values:
+
+```csharp
+var start = new DateTimeOffset(2026, 1, 1, 8, 0, 0, TimeSpan.FromHours(8));
+var end = new DateTimeOffset(2026, 2, 1, 8, 0, 0, TimeSpan.FromHours(8));
+
+var januaryOrders = await db.Set<Order>()
+	.Where(order => order.CreatedAt >= start && order.CreatedAt < end)
+	.ToListAsync();
+```
+
+The half-open range form `>= start && < end` is the recommended pattern for daily, monthly, and timezone-safe statistics queries. Integration tests cover equivalent instants across different offsets and unchanged results after `SET LOCAL TIME ZONE ...`.
 
 ## Analyzer Warnings
 

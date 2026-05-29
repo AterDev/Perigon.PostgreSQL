@@ -81,6 +81,26 @@ Accept: application/json
 
 ###
 
+GET {{sampleHostAddress}}/stats/users-created/daily?from=2026-01-01T00:00:00Z
+Accept: application/json
+
+###
+
+GET {{sampleHostAddress}}/stats/users-created/monthly?from=2026-01-01T00:00:00Z
+Accept: application/json
+
+###
+
+GET {{sampleHostAddress}}/stats/users-created/quarterly?from=2026-01-01T00:00:00Z
+Accept: application/json
+
+###
+
+GET {{sampleHostAddress}}/stats/users-created/range-offset?status=active&from=2026-01-01T08:00:00%2B08:00&to=2026-02-01T08:00:00%2B08:00
+Accept: application/json
+
+###
+
 GET {{sampleHostAddress}}/sql-preview/left-join
 Accept: application/json
 

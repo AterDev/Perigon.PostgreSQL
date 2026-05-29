@@ -8,8 +8,8 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <PackageId>Perigon.PostgreSQL</PackageId>
     <Title>Perigon.PostgreSQL</Title>
-    <Version>0.1.2</Version>
-    <Authors>AterDev</Authors>
+    <Version>0.1.3</Version>
+    <Authors>Niltor</Authors>
     <Company>AterDev</Company>
     <Description>PostgreSQL-only NativeAOT-friendly data access library with deterministic SQL, LINQ
       translation, no change tracking, source generation, and PostgreSQL-native features.</Description>

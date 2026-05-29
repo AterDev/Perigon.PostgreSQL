@@ -75,7 +75,7 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
             throw new InvalidOperationException("PostgreSQL connection string or NpgsqlDataSource was not configured.");
         }
 
-        _ownedDataSource = NpgsqlDataSource.Create(_options.ConnectionString);
+        _ownedDataSource = NpgsqlDataSource.Create(BuildEffectiveConnectionString());
         return _ownedDataSource;
     }
 
@@ -239,6 +239,11 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
     {
         var command = _transactionConnection?.CreateCommand() ?? GetDataSource().CreateCommand();
         command.CommandText = sql.CommandText;
+        if (_options.CommandTimeout is not null)
+        {
+            command.CommandTimeout = TimeoutSeconds(_options.CommandTimeout.Value, nameof(_options.CommandTimeout));
+        }
+
         if (_transaction is not null)
         {
             command.Transaction = _transaction;
@@ -247,7 +252,7 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         foreach (var parameter in sql.Parameters)
         {
             var npgsqlParameter = command.CreateParameter();
-            npgsqlParameter.Value = parameter.Value ?? DBNull.Value;
+            npgsqlParameter.Value = NormalizeParameterValue(parameter.Value) ?? DBNull.Value;
             if (parameter.DbType is not null)
             {
                 npgsqlParameter.NpgsqlDbType = parameter.DbType.Value;
@@ -257,6 +262,67 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         }
 
         return command;
+    }
+
+    internal string BuildEffectiveConnectionString()
+    {
+        if (string.IsNullOrWhiteSpace(_options.ConnectionString))
+        {
+            throw new InvalidOperationException("PostgreSQL connection string was not configured.");
+        }
+
+        var builder = new NpgsqlConnectionStringBuilder(_options.ConnectionString);
+        if (_options.ConnectionTimeout is not null)
+        {
+            builder.Timeout = TimeoutSeconds(_options.ConnectionTimeout.Value, nameof(_options.ConnectionTimeout));
+        }
+
+        if (_options.CommandTimeout is not null)
+        {
+            builder.CommandTimeout = TimeoutSeconds(_options.CommandTimeout.Value, nameof(_options.CommandTimeout));
+        }
+
+        if (_options.PoolingEnabled is not null)
+        {
+            builder.Pooling = _options.PoolingEnabled.Value;
+        }
+
+        if (_options.MinPoolSize is not null)
+        {
+            builder.MinPoolSize = _options.MinPoolSize.Value;
+        }
+
+        if (_options.MaxPoolSize is not null)
+        {
+            builder.MaxPoolSize = _options.MaxPoolSize.Value;
+        }
+
+        return builder.ConnectionString;
+    }
+
+    private static object? NormalizeParameterValue(object? value)
+    {
+        return value switch
+        {
+            DateTimeOffset dateTimeOffset => dateTimeOffset.UtcDateTime,
+            _ => value
+        };
+    }
+
+    private static int TimeoutSeconds(TimeSpan timeout, string parameterName)
+    {
+        if (timeout == TimeSpan.Zero)
+        {
+            return 0;
+        }
+
+        var seconds = Math.Ceiling(timeout.TotalSeconds);
+        if (seconds > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(parameterName, "Timeout is too large.");
+        }
+
+        return (int)seconds;
     }
 
     private static async Task ExecuteDdlAsync(string commandText, NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)

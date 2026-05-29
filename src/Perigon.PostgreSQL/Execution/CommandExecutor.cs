@@ -129,7 +129,7 @@ internal static class CommandExecutor
             return Enum.ToObject(effectiveType, value);
         }
 
-        return Convert.ChangeType(value, effectiveType, System.Globalization.CultureInfo.InvariantCulture);
+        return ConvertToTargetType(value, effectiveType);
     }
 
     public static async Task<T> ExecuteScalarAsync<T>(
@@ -145,7 +145,7 @@ internal static class CommandExecutor
         }
 
         var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
-        return (T)Convert.ChangeType(value, targetType, System.Globalization.CultureInfo.InvariantCulture);
+        return (T)ConvertToTargetType(value, targetType);
     }
 
     public static async Task<List<T>> ExecuteScalarListAsync<T>(
@@ -166,10 +166,28 @@ internal static class CommandExecutor
 
             var value = reader.GetValue(0);
             var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
-            results.Add((T)Convert.ChangeType(value, targetType, System.Globalization.CultureInfo.InvariantCulture));
+            results.Add((T)ConvertToTargetType(value, targetType));
         }
 
         return results;
+    }
+
+    private static object ConvertToTargetType(object value, Type targetType)
+    {
+        if (targetType == typeof(DateTimeOffset) && value is DateTime dateTime)
+        {
+            if (dateTime.Kind == DateTimeKind.Local)
+            {
+                return new DateTimeOffset(dateTime);
+            }
+
+            var utc = dateTime.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+                : dateTime;
+            return new DateTimeOffset(utc, TimeSpan.Zero);
+        }
+
+        return Convert.ChangeType(value, targetType, System.Globalization.CultureInfo.InvariantCulture);
     }
 
 }

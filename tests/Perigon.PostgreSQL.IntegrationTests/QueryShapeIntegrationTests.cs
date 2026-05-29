@@ -1,5 +1,6 @@
 using Perigon.PostgreSQL;
 using Perigon.PostgreSQL.Execution;
+using Perigon.PostgreSQL.RawSql;
 
 namespace Perigon.PostgreSQL.IntegrationTests;
 
@@ -254,6 +255,195 @@ public sealed class QueryShapeIntegrationTests
             .ToScalarListAsync();
 
         Assert.Equal(["NullHasValue-Null"], missingUpdatedAt);
+    }
+
+    [Fact]
+    public async Task DateTime_range_filter_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "DateRange-Before",
+                Age = 31,
+                IsActive = true,
+                Status = "date-range",
+                CreatedAt = new DateTime(2025, 12, 31, 23, 59, 59, DateTimeKind.Utc),
+                Tags = ["date-range"],
+                ProfileJson = "{}"
+            },
+            new IntegrationUser
+            {
+                UserName = "DateRange-In",
+                Age = 32,
+                IsActive = true,
+                Status = "date-range",
+                CreatedAt = new DateTime(2026, 1, 15, 12, 0, 0, DateTimeKind.Utc),
+                Tags = ["date-range"],
+                ProfileJson = "{}"
+            },
+            new IntegrationUser
+            {
+                UserName = "DateRange-After",
+                Age = 33,
+                IsActive = true,
+                Status = "date-range",
+                CreatedAt = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["date-range"],
+                ProfileJson = "{}"
+            }
+        ]);
+
+        var start = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var end = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var names = await db.IntegrationUsers
+            .Where(u => u.Status == "date-range" && u.CreatedAt >= start && u.CreatedAt < end)
+            .OrderBy(u => u.UserName)
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        Assert.Equal(["DateRange-In"], names);
+    }
+
+    [Fact]
+    public async Task DateTimeOffset_range_filter_matches_equivalent_instants_across_offsets()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationOffsetOrders.InsertManyReturningAsync(
+        [
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "TZ-BEFORE",
+                Status = "offset-range",
+                OrderTime = new DateTimeOffset(2025, 12, 31, 23, 59, 59, TimeSpan.Zero),
+                TotalPrice = 10m
+            },
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "TZ-IN-UTC",
+                Status = "offset-range",
+                OrderTime = new DateTimeOffset(2026, 1, 15, 12, 0, 0, TimeSpan.Zero),
+                TotalPrice = 20m
+            },
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "TZ-IN-PLUS8",
+                Status = "offset-range",
+                OrderTime = new DateTimeOffset(2026, 1, 16, 8, 0, 0, TimeSpan.FromHours(8)),
+                TotalPrice = 30m
+            },
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "TZ-AFTER",
+                Status = "offset-range",
+                OrderTime = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero),
+                TotalPrice = 40m
+            }
+        ]);
+
+        var start = new DateTimeOffset(2026, 1, 1, 8, 0, 0, TimeSpan.FromHours(8));
+        var end = new DateTimeOffset(2026, 2, 1, 8, 0, 0, TimeSpan.FromHours(8));
+
+        var orderNos = await db.IntegrationOffsetOrders
+            .Where(o => o.Status == "offset-range" && o.OrderTime >= start && o.OrderTime < end)
+            .OrderBy(o => o.OrderNo)
+            .Select(o => o.OrderNo)
+            .ToScalarListAsync();
+
+        Assert.Equal(["TZ-IN-PLUS8", "TZ-IN-UTC"], orderNos);
+    }
+
+    [Fact]
+    public async Task DateTimeOffset_range_filter_remains_stable_when_session_timezone_changes()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+
+        _ = await db.IntegrationOffsetOrders.InsertManyReturningAsync(
+        [
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "TZ-SESSION-IN",
+                Status = "offset-session-range",
+                OrderTime = new DateTimeOffset(2026, 1, 15, 12, 0, 0, TimeSpan.Zero),
+                TotalPrice = 50m
+            },
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "TZ-SESSION-OUT",
+                Status = "offset-session-range",
+                OrderTime = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero),
+                TotalPrice = 60m
+            }
+        ]);
+
+        var start = new DateTimeOffset(2026, 1, 1, 8, 0, 0, TimeSpan.FromHours(8));
+        var end = new DateTimeOffset(2026, 2, 1, 8, 0, 0, TimeSpan.FromHours(8));
+
+        await db.TransactionAsync(async ct =>
+        {
+            await db.SqlCommand(System.Runtime.CompilerServices.FormattableStringFactory.Create("set local time zone 'Asia/Shanghai'"))
+                .ExecuteAsync(ct);
+
+            var orderNos = await db.IntegrationOffsetOrders
+                .Where(o => o.Status == "offset-session-range" && o.OrderTime >= start && o.OrderTime < end)
+                .OrderBy(o => o.OrderNo)
+                .Select(o => o.OrderNo)
+                .ToScalarListAsync(ct);
+
+            Assert.Equal(["TZ-SESSION-IN"], orderNos);
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Nullable_DateTimeOffset_range_filter_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationOffsetCheckpoints.InsertManyReturningAsync(
+        [
+            new IntegrationOffsetCheckpoint
+            {
+                CheckpointNo = "CP-NULL",
+                Status = "offset-nullable-range",
+                ProcessedAt = null
+            },
+            new IntegrationOffsetCheckpoint
+            {
+                CheckpointNo = "CP-START",
+                Status = "offset-nullable-range",
+                ProcessedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+            },
+            new IntegrationOffsetCheckpoint
+            {
+                CheckpointNo = "CP-MID",
+                Status = "offset-nullable-range",
+                ProcessedAt = new DateTimeOffset(2026, 1, 16, 8, 0, 0, TimeSpan.FromHours(8))
+            },
+            new IntegrationOffsetCheckpoint
+            {
+                CheckpointNo = "CP-END",
+                Status = "offset-nullable-range",
+                ProcessedAt = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero)
+            }
+        ]);
+
+        var start = new DateTimeOffset(2026, 1, 1, 8, 0, 0, TimeSpan.FromHours(8));
+        var end = new DateTimeOffset(2026, 2, 1, 8, 0, 0, TimeSpan.FromHours(8));
+
+        var present = await db.IntegrationOffsetCheckpoints
+            .Where(c => c.Status == "offset-nullable-range" && c.ProcessedAt.HasValue && c.ProcessedAt.Value >= start && c.ProcessedAt.Value < end)
+            .OrderBy(c => c.CheckpointNo)
+            .Select(c => c.CheckpointNo)
+            .ToScalarListAsync();
+
+        var missing = await db.IntegrationOffsetCheckpoints
+            .Where(c => c.Status == "offset-nullable-range" && !c.ProcessedAt.HasValue)
+            .Select(c => c.CheckpointNo)
+            .ToScalarListAsync();
+
+        Assert.Equal(["CP-MID", "CP-START"], present);
+        Assert.Equal(["CP-NULL"], missing);
     }
 
     [Fact]
@@ -587,5 +777,223 @@ public sealed class QueryShapeIntegrationTests
             .ToListAsync();
 
         Assert.Contains(users, u => u.UserName == "JsonPath-Alice");
+    }
+
+    [Fact]
+    public async Task Daily_monthly_and_quarterly_statistics_execute_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationOrders.InsertManyReturningAsync(
+        [
+            new IntegrationOrder
+            {
+                OrderNo = "S-001",
+                Status = "paid",
+                OrderTime = new DateTime(2026, 1, 15, 8, 30, 0, DateTimeKind.Utc),
+                TotalPrice = 10.5m
+            },
+            new IntegrationOrder
+            {
+                OrderNo = "S-002",
+                Status = "paid",
+                OrderTime = new DateTime(2026, 1, 15, 16, 45, 0, DateTimeKind.Utc),
+                TotalPrice = 15.0m
+            },
+            new IntegrationOrder
+            {
+                OrderNo = "S-003",
+                Status = "pending",
+                OrderTime = new DateTime(2026, 2, 20, 9, 0, 0, DateTimeKind.Utc),
+                TotalPrice = 20m
+            },
+            new IntegrationOrder
+            {
+                OrderNo = "S-004",
+                Status = "paid-quarter",
+                OrderTime = new DateTime(2026, 5, 10, 11, 0, 0, DateTimeKind.Utc),
+                TotalPrice = 30m
+            },
+            new IntegrationOrder
+            {
+                OrderNo = "S-005",
+                Status = "paid-quarter",
+                OrderTime = new DateTime(2026, 6, 12, 12, 0, 0, DateTimeKind.Utc),
+                TotalPrice = 40m
+            }
+        ]);
+
+        var daily = await db.IntegrationOrders
+            .GroupBy(o => o.OrderTime.Date)
+            .Select(g => new IntegrationSummaryLineChartRow
+            {
+                Date = g.Key,
+                Count = g.LongCount(),
+                TotalAmount = g.Sum(o => o.TotalPrice)
+            })
+            .OrderBy(x => x.Date)
+            .ToListAsync();
+
+        var monthly = await db.IntegrationOrders
+            .GroupBy(o => new { o.OrderTime.Year, o.OrderTime.Month })
+            .Select(g => new IntegrationSummaryLineChartRow
+            {
+                Date = new DateTime(g.Key.Year, g.Key.Month, 1),
+                Count = g.LongCount(),
+                TotalAmount = g.Sum(o => o.TotalPrice)
+            })
+            .OrderBy(x => x.Date)
+            .ToListAsync();
+
+        var quarterly = await db.IntegrationOrders
+            .GroupBy(o => new { o.OrderTime.Year, Quarter = (o.OrderTime.Month - 1) / 3 + 1 })
+            .Select(g => new IntegrationSummaryLineChartRow
+            {
+                Date = new DateTime(g.Key.Year, (g.Key.Quarter - 1) * 3 + 1, 1),
+                Count = g.LongCount(),
+                TotalAmount = g.Sum(o => o.TotalPrice)
+            })
+            .OrderBy(x => x.Date)
+            .ToListAsync();
+
+        Assert.Contains(daily, row => row.Date == new DateTime(2026, 1, 15, 0, 0, 0, DateTimeKind.Utc) && row.Count == 2 && row.TotalAmount == 25.5m);
+        Assert.Contains(monthly, row => row.Date == new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Unspecified) && row.Count == 2 && row.TotalAmount == 25.5m);
+        Assert.Contains(monthly, row => row.Date == new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Unspecified) && row.Count == 1 && row.TotalAmount == 20m);
+        Assert.Contains(quarterly, row => row.Date == new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Unspecified) && row.Count == 3 && row.TotalAmount == 45.5m);
+        Assert.Contains(quarterly, row => row.Date == new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Unspecified) && row.Count == 2 && row.TotalAmount == 70m);
+    }
+
+    [Fact]
+    public async Task Grouped_statistics_support_string_filter_after_projection()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationOrders.InsertManyReturningAsync(
+        [
+            new IntegrationOrder
+            {
+                OrderNo = "S-101",
+                Status = "paid-success",
+                OrderTime = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
+                TotalPrice = 11m
+            },
+            new IntegrationOrder
+            {
+                OrderNo = "S-102",
+                Status = "paid-success",
+                OrderTime = new DateTime(2026, 7, 2, 0, 0, 0, DateTimeKind.Utc),
+                TotalPrice = 12m
+            },
+            new IntegrationOrder
+            {
+                OrderNo = "S-103",
+                Status = "pending-review",
+                OrderTime = new DateTime(2026, 7, 3, 0, 0, 0, DateTimeKind.Utc),
+                TotalPrice = 13m
+            }
+        ]);
+
+        var rows = await db.IntegrationOrders
+            .GroupBy(o => new { o.OrderTime.Year, o.Status })
+            .Select(g => new IntegrationSummaryLineChartRow
+            {
+                Date = new DateTime(g.Key.Year, 1, 1),
+                Status = g.Key.Status,
+                Count = g.LongCount(),
+                TotalAmount = g.Sum(o => o.TotalPrice)
+            })
+            .Where(x => x.Status!.StartsWith("paid") && x.Count > 1)
+            .ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.Equal("paid-success", row.Status);
+        Assert.Equal(2, row.Count);
+        Assert.Equal(23m, row.TotalAmount);
+    }
+
+    [Fact]
+    public async Task DateTimeOffset_daily_monthly_and_quarterly_statistics_execute_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationOffsetOrders.InsertManyReturningAsync(
+        [
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "O-001",
+                Status = "paid",
+                OrderTime = new DateTimeOffset(2026, 1, 15, 8, 30, 0, TimeSpan.Zero),
+                TotalPrice = 10.5m
+            },
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "O-002",
+                Status = "paid",
+                OrderTime = new DateTimeOffset(2026, 1, 15, 16, 45, 0, TimeSpan.Zero),
+                TotalPrice = 15.0m
+            },
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "O-003",
+                Status = "pending",
+                OrderTime = new DateTimeOffset(2026, 2, 20, 9, 0, 0, TimeSpan.Zero),
+                TotalPrice = 20m
+            },
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "O-004",
+                Status = "paid-quarter",
+                OrderTime = new DateTimeOffset(2026, 5, 10, 11, 0, 0, TimeSpan.Zero),
+                TotalPrice = 30m
+            },
+            new IntegrationOffsetOrder
+            {
+                OrderNo = "O-005",
+                Status = "paid-quarter",
+                OrderTime = new DateTimeOffset(2026, 6, 12, 12, 0, 0, TimeSpan.Zero),
+                TotalPrice = 40m
+            }
+        ]);
+
+        var scopedOrders = db.IntegrationOffsetOrders.Where(o => o.OrderNo.StartsWith("O-"));
+
+        var daily = await scopedOrders
+            .GroupBy(o => o.OrderTime.Date)
+            .Select(g => new IntegrationSummaryLineChartOffsetRow
+            {
+                Date = g.Key,
+                Count = g.LongCount(),
+                TotalAmount = g.Sum(o => o.TotalPrice)
+            })
+            .OrderBy(x => x.Date)
+            .ToListAsync();
+
+        var monthly = await scopedOrders
+            .GroupBy(o => new { o.OrderTime.Year, o.OrderTime.Month })
+            .Select(g => new IntegrationSummaryLineChartOffsetRow
+            {
+                Date = new DateTimeOffset(g.Key.Year, g.Key.Month, 1, 0, 0, 0, TimeSpan.Zero),
+                Count = g.LongCount(),
+                TotalAmount = g.Sum(o => o.TotalPrice)
+            })
+            .OrderBy(x => x.Date)
+            .ToListAsync();
+
+        var quarterly = await scopedOrders
+            .GroupBy(o => new { o.OrderTime.Year, Quarter = (o.OrderTime.Month - 1) / 3 + 1 })
+            .Select(g => new IntegrationSummaryLineChartOffsetRow
+            {
+                Date = new DateTimeOffset(g.Key.Year, (g.Key.Quarter - 1) * 3 + 1, 1, 0, 0, 0, TimeSpan.Zero),
+                Count = g.LongCount(),
+                TotalAmount = g.Sum(o => o.TotalPrice)
+            })
+            .OrderBy(x => x.Date)
+            .ToListAsync();
+
+        Assert.Contains(daily, row => row.Date == new DateTimeOffset(2026, 1, 15, 0, 0, 0, TimeSpan.Zero) && row.Count == 2 && row.TotalAmount == 25.5m);
+        Assert.All(daily, row => Assert.Equal(TimeSpan.Zero, row.Date.Offset));
+        Assert.Contains(monthly, row => row.Date == new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero) && row.Count == 2 && row.TotalAmount == 25.5m);
+        Assert.Contains(monthly, row => row.Date == new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero) && row.Count == 1 && row.TotalAmount == 20m);
+        Assert.All(monthly, row => Assert.Equal(TimeSpan.Zero, row.Date.Offset));
+        Assert.Contains(quarterly, row => row.Date == new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero) && row.Count == 3 && row.TotalAmount == 45.5m);
+        Assert.Contains(quarterly, row => row.Date == new DateTimeOffset(2026, 4, 1, 0, 0, 0, TimeSpan.Zero) && row.Count == 2 && row.TotalAmount == 70m);
+        Assert.All(quarterly, row => Assert.Equal(TimeSpan.Zero, row.Date.Offset));
     }
 }

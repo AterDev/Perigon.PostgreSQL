@@ -21,6 +21,8 @@ It covers:
 - Count-distinct aggregate projections.
 - Report queries with joins.
 - Statistics queries with `GROUP BY`.
+- Daily, monthly, and quarterly created-at statistics endpoints.
+- A `DateTimeOffset` range-statistics endpoint with explicit `from` / `to` query input.
 - SQL preview for LINQ join and group-by translations.
 - SQL preview for LINQ left join through `GroupJoin` + `SelectMany` + `DefaultIfEmpty`.
 
@@ -61,10 +63,16 @@ Invoke-RestMethod "http://localhost:5088/reports/user-blog-links?publicOnly=true
 Invoke-RestMethod "http://localhost:5088/reports/user-blogs"
 Invoke-RestMethod "http://localhost:5088/stats/users-by-status"
 Invoke-RestMethod "http://localhost:5088/stats/distinct-active-by-status"
+Invoke-RestMethod "http://localhost:5088/stats/users-created/daily?from=2026-01-01T00:00:00Z"
+Invoke-RestMethod "http://localhost:5088/stats/users-created/monthly?from=2026-01-01T00:00:00Z"
+Invoke-RestMethod "http://localhost:5088/stats/users-created/quarterly?from=2026-01-01T00:00:00Z"
+Invoke-RestMethod "http://localhost:5088/stats/users-created/range-offset?status=active&from=2026-01-01T08:00:00%2B08:00&to=2026-02-01T08:00:00%2B08:00"
 Invoke-RestMethod "http://localhost:5088/sql-preview/join"
 Invoke-RestMethod "http://localhost:5088/sql-preview/left-join"
 Invoke-RestMethod "http://localhost:5088/sql-preview/group-by"
 ```
+
+For time-range and bucket endpoints, prefer UTC ISO 8601 input such as `2026-01-01T00:00:00Z`. The `/stats/users-created/range-offset` endpoint also accepts offset-aware input such as `2026-01-01T08:00:00+08:00` and normalizes it to UTC before querying PostgreSQL.
 
 Stop PostgreSQL:
 

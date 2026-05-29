@@ -1,6 +1,6 @@
 # LINQ 支持矩阵
 
-日期：2026-05-24
+日期：2026-05-29
 
 本文档定义当前实现支持的 LINQ/表达式范围，以及生产版本计划支持和明确不支持的边界。任何新增支持项都必须先补 SQL 快照测试，再补真实 PostgreSQL 集成测试。
 
@@ -64,6 +64,9 @@
 | `Nullable<T>.HasValue` | 已实现 | `IS NOT NULL` |
 | `Nullable<T>.Value` | 已实现 | 列表达式 |
 | 日期范围 | 已实现 | 两个参数比较 |
+| `DateTimeOffset` 时间范围 | 已实现基础版 | `timestamp with time zone` 参数比较；参数绑定时归一化为 UTC instant |
+| `DateTimeOffset?` null / `HasValue` / `Value` | 已实现基础版 | `IS NULL` / `IS NOT NULL` / 列比较 |
+| 半开时间区间 `>= start && < end` | 已实现 | 推荐时间范围写法；SQL 和真实 PostgreSQL 集成测试覆盖 |
 | 本地方法调用 | 暂不支持 | 抛出 `UnsupportedQueryExpressionException` |
 | `Expression.Invoke` | 暂不支持 | 抛异常 |
 | 客户端执行回退 | 暂不支持 | 禁止 |
@@ -152,7 +155,13 @@
 | `GroupBy(...).Select(g => new { g.Key, Count = g.Count() })` | 已实现 SQL 预览 | `GROUP BY`, `count(*)` |
 | `Sum/Min/Max/Average` | 已实现 SQL 预览 | 聚合函数 |
 | 多 key group | 已实现基础版 | 多列 `GROUP BY`，支持 DTO/匿名类型投影 |
+| `GroupBy(x => x.OrderTime.Date)` | 已实现基础版 | `date_trunc('day', column)` |
+| `GroupBy(x => new { x.OrderTime.Year, x.OrderTime.Month })` | 已实现基础版 | `extract(year/month from column)` |
+| `GroupBy(x => new { x.OrderTime.Year, Quarter = (x.OrderTime.Month - 1) / 3 + 1 })` | 已实现基础版 | `extract(...)` + 算术表达式 |
+| 聚合投影中 `new DateTime(g.Key.Year, g.Key.Month, 1)` | 已实现基础版 | `make_timestamp(...)` |
+| 聚合投影中 `new DateTimeOffset(g.Key.Year, g.Key.Month, 1, 0, 0, 0, TimeSpan.Zero)` | 已实现基础版 | `make_timestamptz(..., 'UTC')` |
 | 聚合投影后的 `Where/OrderBy/Skip/Take` | 已实现 SQL 预览 | 简单 `Where` 输出 `HAVING`；带排序/分页时使用聚合子查询包装 |
+| 聚合投影后的字符串比较/筛选 | 已实现基础版 | 支持 `==` / `!=` / `StartsWith` / `Contains` / `EndsWith` |
 | 原生 `HAVING` 关键字输出 | 已实现基础版 | `GROUP BY ... HAVING ...` |
 | `CountDistinct/LongCountDistinct` | 已实现基础版 | `count(distinct ...)` |
 | `ArrayAgg(selector)` | 已实现基础版 | `array_agg(column)` |
@@ -170,12 +179,16 @@
 
 ## 11. 当前测试数量
 
-截至本文档日期，当前测试数量为 132 个，其中包含 103 个单元/SQL 快照测试和 29 个 Docker PostgreSQL 集成测试，覆盖：
+截至本文档日期，当前测试数量为 211 个，其中包含 155 个单元/SQL 快照测试和 56 个 Docker PostgreSQL 集成测试，覆盖：
 
 - 默认映射和特性映射。
 - 标识符引用和命名约定。
 - 基础 Where。
 - nullable/null。
+- `DateTime` 与 `DateTimeOffset` 时间范围筛选。
+- `DateTimeOffset?` 的 null / `HasValue` / `Value` 时间比较。
+- PostgreSQL `timestamp with time zone` 的 UTC 参数归一化。
+- session `time zone` 改变后的 `DateTimeOffset` 范围筛选稳定性。
 - bool 谓词。
 - string 方法。
 - string Length/Trim/IsNullOrWhiteSpace。
