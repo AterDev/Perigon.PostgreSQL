@@ -536,6 +536,76 @@ public sealed class CrudIntegrationTests
     }
 
     [Fact]
+    public async Task Raw_sql_optional_filter_executes_when_parameter_is_omitted_for_null()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var alice = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Raw-Report-Alice",
+            Age = 31,
+            IsActive = true,
+            Status = "report",
+            CreatedAt = new DateTime(2026, 1, 26, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["raw", "report"],
+            ProfileJson = "{}"
+        });
+        var bob = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Raw-Report-Bob",
+            Age = 32,
+            IsActive = true,
+            Status = "report",
+            CreatedAt = new DateTime(2026, 1, 27, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["raw", "report"],
+            ProfileJson = "{}"
+        });
+
+        _ = await db.IntegrationBlogs.InsertAsync(new IntegrationBlog
+        {
+            IntegrationUserId = alice.Id,
+            Name = "Alice Blog",
+            IsPublic = true,
+            CreatedAt = new DateTime(2026, 1, 26, 0, 0, 0, DateTimeKind.Utc)
+        });
+        _ = await db.IntegrationBlogs.InsertAsync(new IntegrationBlog
+        {
+            IntegrationUserId = bob.Id,
+            Name = "Bob Blog",
+            IsPublic = true,
+            CreatedAt = new DateTime(2026, 1, 27, 0, 0, 0, DateTimeKind.Utc)
+        });
+
+         static FormattableString BuildUserBlogReport(string? userName) => string.IsNullOrWhiteSpace(userName)
+             ? System.Runtime.CompilerServices.FormattableStringFactory.Create(@"
+    select u.id as user_id,
+        u.user_name,
+        b.id as blog_id,
+        b.name as blog_name
+    from integration_users u
+    join integration_blogs b on b.integration_user_id = u.id
+    order by u.user_name, b.name")
+            : $"""
+            select u.id as user_id,
+                   u.user_name,
+                   b.id as blog_id,
+                   b.name as blog_name
+            from integration_users u
+            join integration_blogs b on b.integration_user_id = u.id
+            where u.user_name = {userName}
+            order by u.user_name, b.name
+            """;
+
+        var allRows = await db.SqlQuery<IntegrationUserBlogRow>(BuildUserBlogReport(null)).ToListAsync();
+        var filteredRows = await db.SqlQuery<IntegrationUserBlogRow>(BuildUserBlogReport("Raw-Report-Bob")).ToListAsync();
+
+        Assert.Contains(allRows, row => row.UserName == "Raw-Report-Alice" && row.BlogName == "Alice Blog");
+        Assert.Contains(allRows, row => row.UserName == "Raw-Report-Bob" && row.BlogName == "Bob Blog");
+        var filtered = Assert.Single(filteredRows);
+        Assert.Equal("Raw-Report-Bob", filtered.UserName);
+        Assert.Equal("Bob Blog", filtered.BlogName);
+    }
+
+    [Fact]
     public async Task Insert_many_returning_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);

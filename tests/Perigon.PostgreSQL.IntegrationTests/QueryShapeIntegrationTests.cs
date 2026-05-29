@@ -219,6 +219,44 @@ public sealed class QueryShapeIntegrationTests
     }
 
     [Fact]
+    public async Task Negated_nullable_has_value_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "NullHasValue-Null",
+                Age = 35,
+                IsActive = true,
+                Status = "null-has-value",
+                CreatedAt = new DateTime(2026, 4, 27, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedAt = null,
+                Tags = ["null-has-value"],
+                ProfileJson = "{}"
+            },
+            new IntegrationUser
+            {
+                UserName = "NullHasValue-Set",
+                Age = 36,
+                IsActive = true,
+                Status = "null-has-value",
+                CreatedAt = new DateTime(2026, 4, 28, 0, 0, 0, DateTimeKind.Utc),
+                UpdatedAt = new DateTime(2026, 4, 29, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["null-has-value"],
+                ProfileJson = "{}"
+            }
+        ]);
+
+        var missingUpdatedAt = await db.IntegrationUsers
+            .Where(u => u.Status == "null-has-value" && !u.UpdatedAt.HasValue)
+            .Select(u => u.UserName)
+            .ToScalarListAsync();
+
+        Assert.Equal(["NullHasValue-Null"], missingUpdatedAt);
+    }
+
+    [Fact]
     public async Task Multi_key_group_by_projection_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
@@ -470,6 +508,62 @@ public sealed class QueryShapeIntegrationTests
 
         var row = Assert.Single(rows);
         Assert.Equal("having-match", row.Status);
+        Assert.Equal(2, row.Count);
+    }
+
+    [Fact]
+    public async Task Group_by_having_null_filter_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "HavingNull-A",
+                Age = 37,
+                IsActive = true,
+                Status = null,
+                CreatedAt = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["having-null"],
+                ProfileJson = "{}"
+            },
+            new IntegrationUser
+            {
+                UserName = "HavingNull-B",
+                Age = 38,
+                IsActive = false,
+                Status = null,
+                CreatedAt = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["having-null"],
+                ProfileJson = "{}"
+            },
+            new IntegrationUser
+            {
+                UserName = "HavingNull-C",
+                Age = 39,
+                IsActive = true,
+                Status = "having-null-non-null",
+                CreatedAt = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["having-null"],
+                ProfileJson = "{}"
+            }
+        ]);
+
+        string? status = null;
+
+        var rows = await db.IntegrationUsers
+            .Where(u => u.Tags!.Contains("having-null"))
+            .GroupBy(u => u.Status)
+            .Select(g => new IntegrationUserStatusStat
+            {
+                Status = g.Key,
+                Count = g.LongCount()
+            })
+            .Where(x => x.Status == status)
+            .ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.Null(row.Status);
         Assert.Equal(2, row.Count);
     }
 

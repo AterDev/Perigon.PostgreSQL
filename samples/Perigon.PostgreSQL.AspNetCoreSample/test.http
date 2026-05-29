@@ -1,0 +1,6 @@
+GET https://api.example.com/users
+Accept: application/json
+
+###
+GET http://127.0.0.1:5088/users/summaries
+Accept: application/json

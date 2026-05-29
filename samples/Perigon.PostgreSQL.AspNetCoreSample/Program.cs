@@ -331,7 +331,8 @@ app.MapPost("/posts", async (SampleDbContext db, CreatePostRequest request) =>
 
 app.MapGet("/reports/user-blogs", async (SampleDbContext db, string? userName) =>
 {
-    var rows = await db.SqlQuery<UserBlogRow>($"""
+    FormattableString sql = string.IsNullOrWhiteSpace(userName)
+        ? System.Runtime.CompilerServices.FormattableStringFactory.Create("""
         select u.id as user_id,
                u.user_name,
                b.id as blog_id,
@@ -340,10 +341,24 @@ app.MapGet("/reports/user-blogs", async (SampleDbContext db, string? userName) =
         from sample_users u
         join sample_blogs b on b.sample_user_id = u.id
         left join sample_posts p on p.sample_blog_id = b.id
-        where ({userName} is null or u.user_name = {userName})
         group by u.id, u.user_name, b.id, b.name
         order by u.user_name, b.name
-        """).ToListAsync();
+        """)
+        : $"""
+        select u.id as user_id,
+               u.user_name,
+               b.id as blog_id,
+               b.name as blog_name,
+               count(p.id) as post_count
+        from sample_users u
+        join sample_blogs b on b.sample_user_id = u.id
+        left join sample_posts p on p.sample_blog_id = b.id
+        where u.user_name = {userName}
+        group by u.id, u.user_name, b.id, b.name
+        order by u.user_name, b.name
+        """;
+
+    var rows = await db.SqlQuery<UserBlogRow>(sql).ToListAsync();
 
     return Results.Ok(rows);
 });

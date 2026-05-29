@@ -139,6 +139,41 @@ public sealed class GroupBySqlTests
     }
 
     [Fact]
+    public void GroupBy_projection_where_captured_null_variable_uses_is_null()
+    {
+        using var db = new TestDbContext();
+        string? status = null;
+
+        var sql = db.RichUsers
+            .GroupBy(u => u.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .Where(x => x.Status == status)
+            .ToSql();
+
+        Assert.Equal(
+            "SELECT e.\"status\" AS \"Status\", count(*) AS \"Count\" FROM \"rich_users\" AS e GROUP BY e.\"status\" HAVING e.\"status\" IS NULL",
+            sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
+
+    [Fact]
+    public void GroupBy_projection_where_left_null_constant_uses_is_not_null()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers
+            .GroupBy(u => u.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .Where(x => null != x.Status)
+            .ToSql();
+
+        Assert.Equal(
+            "SELECT e.\"status\" AS \"Status\", count(*) AS \"Count\" FROM \"rich_users\" AS e GROUP BY e.\"status\" HAVING e.\"status\" IS NOT NULL",
+            sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
+
+    [Fact]
     public void GroupBy_multiple_keys_generates_multi_column_group_by()
     {
         using var db = new TestDbContext();

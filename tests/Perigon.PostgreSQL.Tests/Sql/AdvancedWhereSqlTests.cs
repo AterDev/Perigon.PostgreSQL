@@ -29,6 +29,39 @@ public sealed class AdvancedWhereSqlTests
     }
 
     [Fact]
+    public void Null_inequality_uses_is_not_null()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers.Where(u => u.Status != null).ToQuerySql();
+
+        Assert.Contains("e.\"status\" IS NOT NULL", sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
+
+    [Fact]
+    public void Left_null_constant_comparison_uses_is_null()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers.Where(u => null == u.Status).ToQuerySql();
+
+        Assert.Contains("e.\"status\" IS NULL", sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
+
+    [Fact]
+    public void Left_null_constant_inequality_uses_is_not_null()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers.Where(u => null != u.Status).ToQuerySql();
+
+        Assert.Contains("e.\"status\" IS NOT NULL", sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
+
+    [Fact]
     public void Nullable_has_value_translates_to_is_not_null()
     {
         using var db = new TestDbContext();
@@ -36,6 +69,17 @@ public sealed class AdvancedWhereSqlTests
         var sql = db.RichUsers.Where(u => u.UpdatedAt.HasValue).ToQuerySql();
 
         Assert.Contains("e.\"updated_at\" IS NOT NULL", sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
+
+    [Fact]
+    public void Negated_nullable_has_value_preserves_null_check_semantics()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers.Where(u => !u.UpdatedAt.HasValue).ToQuerySql();
+
+        Assert.Contains("NOT (e.\"updated_at\" IS NOT NULL)", sql.CommandText);
         Assert.Empty(sql.Parameters);
     }
 

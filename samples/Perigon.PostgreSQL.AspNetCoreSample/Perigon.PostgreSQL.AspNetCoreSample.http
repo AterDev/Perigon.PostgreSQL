@@ -1,16 +1,16 @@
-@Perigon.PostgreSQL.AspNetCoreSample_HostAddress = http://localhost:5088
+@sampleHostAddress = http://localhost:5088
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/
+GET {{sampleHostAddress}}/
 Accept: application/json
 
 ###
 
-POST {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/seed
+POST {{sampleHostAddress}}/seed
 Accept: application/json
 
 ###
 
-POST {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/bulk/values
+POST {{sampleHostAddress}}/users/bulk/values
 Content-Type: application/json
 
 [
@@ -26,62 +26,62 @@ Content-Type: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users?status=active&tag=postgres&minAge=18
+GET {{sampleHostAddress}}/users?status=active&tag=postgres&minAge=18
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/summaries?status=active
+GET {{sampleHostAddress}}/users/summaries?status=active
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/names?status=active
+GET {{sampleHostAddress}}/users/names?status=active
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/statuses
+GET {{sampleHostAddress}}/users/statuses
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/jsonpath?path=$.level%20?%20(@%20%3E%202)
+GET {{sampleHostAddress}}/users/jsonpath?path=$.level%20?%20(@%20%3E%202)
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/with-blogs?status=active&publicOnly=true
+GET {{sampleHostAddress}}/users/with-blogs?status=active&publicOnly=true
 Accept: application/json
 
 ###
 
-PATCH {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/users/1/age/increment
+PATCH {{sampleHostAddress}}/users/1/age/increment
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/reports/user-blogs
+GET {{sampleHostAddress}}/reports/user-blogs
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/reports/user-blog-links?publicOnly=true
+GET {{sampleHostAddress}}/reports/user-blog-links?publicOnly=true
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/stats/users-by-status
+GET {{sampleHostAddress}}/stats/users-by-status
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/stats/distinct-active-by-status
+GET {{sampleHostAddress}}/stats/distinct-active-by-status
 Accept: application/json
 
 ###
 
-GET {{Perigon.PostgreSQL.AspNetCoreSample_HostAddress}}/sql-preview/left-join
+GET {{sampleHostAddress}}/sql-preview/left-join
 Accept: application/json
 
 ###

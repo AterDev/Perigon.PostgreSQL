@@ -65,4 +65,20 @@ public sealed class RawSqlTests
         Assert.Equal("select * from users where status = $1 or backup_status = $2 and age >= $3", sql.CommandText);
         Assert.Equal([status, status, minAge], sql.Parameters.Select(p => p.Value).ToArray());
     }
+
+    [Fact]
+    public void Raw_sql_optional_filter_can_omit_null_parameter()
+    {
+        using var db = new TestDbContext();
+        string? userName = null;
+
+        FormattableString query = string.IsNullOrWhiteSpace(userName)
+            ? System.Runtime.CompilerServices.FormattableStringFactory.Create("select * from users order by user_name")
+            : $"select * from users where user_name = {userName} order by user_name";
+
+        var sql = db.SqlQuery<RichUser>(query).ToBoundSql();
+
+        Assert.Equal("select * from users order by user_name", sql.CommandText);
+        Assert.Empty(sql.Parameters);
+    }
 }
