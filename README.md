@@ -1,6 +1,6 @@
 # Perigon.PostgreSQL
 
-Perigon.PostgreSQL 是一个面向 PostgreSQL 的 .NET 数据访问库，提供类似 EF Core 的 `DbContext` / `DbSet<T>` 使用方式。
+本库主要是为了满足AOT的需要，并保持 EF Core 的 `DbContext` / `DbSet<T>` 使用方式，专门面向小型应用场景的 PostgreSQL ORM，它支持大部分常见的LINQ查询、原生SQL、事务等功能，但不包含变更跟踪，SaveChanges等机制。
 
 ## 安装
 
