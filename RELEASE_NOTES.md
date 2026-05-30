@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.1.4
+
+- Renamed the reverse-engineering command to `dotnet perigon database scaffold`, added default `--context`, `--namespace`, and `--output` behavior, and standardized scaffold output under `AppDbContext/` plus `Entity/`.
+- Expanded runtime metadata and `EnsureCreated` support for composite primary keys, composite foreign keys, column default SQL, generated column SQL, richer PostgreSQL index metadata, and composite-key `RETURNING` behavior.
+- Expanded PostgreSQL catalog reading and scaffold code generation for composite keys/foreign keys, default SQL, generated expressions, advanced indexes, and view-aligned model output.
+- Refreshed README and development docs to the new command surface and current support matrix, and validated unit tests, integration tests, and the NativeAOT smoke publish path on Windows.
+
 ## 0.1.3
 
 - Added configurable command timeout, connection timeout, and connection pooling options while preserving Npgsql defaults when the options are not explicitly set.

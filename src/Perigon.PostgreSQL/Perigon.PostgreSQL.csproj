@@ -8,7 +8,7 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <PackageId>Perigon.PostgreSQL</PackageId>
     <Title>Perigon.PostgreSQL</Title>
-    <Version>0.1.3</Version>
+    <Version>0.1.4</Version>
     <Authors>Niltor</Authors>
     <Company>AterDev</Company>
     <Description>PostgreSQL-only NativeAOT-friendly data access library with deterministic SQL, LINQ
@@ -20,10 +20,11 @@
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageIcon>perigon_logo.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>0.1.2 renames PostgresDbContext to DbContext, adds
-      ASP.NET Core registration support, expands PostgreSQL schema/scaffolding
-      features, and improves fluent metadata/type mapping support. See
-      RELEASE_NOTES.md for details.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.4 adds `dotnet perigon database scaffold` with new
+      defaults/output layout, expands reverse-engineering/runtime parity for
+      composite keys, default/generated SQL, richer indexes, and views, and
+      validates the NativeAOT smoke publish path. See RELEASE_NOTES.md for
+      details.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

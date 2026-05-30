@@ -97,6 +97,42 @@ public sealed class CreateTableSqlTests
     }
 
     [Fact]
+    public void BuildCreateTable_supports_composite_primary_keys_default_sql_and_generated_column_sql()
+    {
+        using var db = new AdvancedSchemaDbContext();
+        var model = Assert.Single(db.ReadModels(), static model => model.ClrType == typeof(AdvancedOrderLine));
+
+        var sql = CreateTableSqlBuilder.BuildCreateTable(model);
+
+        Assert.Contains("CONSTRAINT \"pk_advanced_order_lines\" PRIMARY KEY (\"order_id\", \"line_no\")", sql);
+        Assert.Contains("\"status\" text DEFAULT 'draft' NOT NULL", sql);
+        Assert.Contains("\"normalized_status\" text GENERATED ALWAYS AS (lower(status)) STORED", sql);
+    }
+
+    [Fact]
+    public void BuildAddForeignKey_supports_composite_foreign_keys()
+    {
+        using var db = new AdvancedSchemaDbContext();
+        var foreignKey = Assert.Single(RelationshipConventions.InferForeignKeys(db.ReadModels()), static foreignKey => foreignKey.ConstraintName == "fk_advanced_shipments_order_id_line_no");
+
+        var sql = CreateTableSqlBuilder.BuildAddForeignKey(foreignKey);
+
+        Assert.Contains("ALTER TABLE \"advanced_shipments\" ADD CONSTRAINT \"fk_advanced_shipments_order_id_line_no\" FOREIGN KEY (\"order_id\", \"line_no\") REFERENCES \"advanced_order_lines\" (\"order_id\", \"line_no\")", sql);
+    }
+
+    [Fact]
+    public void BuildCreateIndex_supports_include_filter_and_method()
+    {
+        using var db = new AdvancedSchemaDbContext();
+        var model = Assert.Single(db.ReadModels(), static model => model.ClrType == typeof(AdvancedOrderLine));
+        var index = Assert.Single(model.Indexes, static index => index.IndexName == "ix_advanced_order_lines_status");
+
+        var sql = CreateTableSqlBuilder.BuildCreateIndex(index);
+
+        Assert.Equal("CREATE INDEX IF NOT EXISTS \"ix_advanced_order_lines_status\" ON \"advanced_order_lines\" USING gin (\"status\") INCLUDE (\"normalized_status\") WHERE status <> ''", sql);
+    }
+
+    [Fact]
     public void BuildCreateTable_rejects_generated_columns_without_sql_expression()
     {
         var model = EntityModel.For<ComputedColumnUser>();
@@ -161,5 +197,74 @@ public sealed class CreateTableSqlTests
 
         [System.ComponentModel.DataAnnotations.Schema.NotMapped]
         public FluentRelationshipUser? Author { get; set; }
+    }
+
+    public sealed class AdvancedSchemaDbContext : DbContext
+    {
+        public AdvancedSchemaDbContext()
+            : base(_ => { })
+        {
+        }
+
+        public DbSet<AdvancedOrderLine> OrderLines => Set<AdvancedOrderLine>();
+
+        public DbSet<AdvancedShipment> Shipments => Set<AdvancedShipment>();
+
+        public IReadOnlyList<EntityModel> ReadModels()
+        {
+            return GetEntityModels();
+        }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<AdvancedOrderLine>(entity =>
+            {
+                entity.ToTable("advanced_order_lines");
+                entity.HasKey(x => new { x.OrderId, x.LineNo });
+                entity.Property(x => x.Status)
+                    .HasColumnName("status")
+                    .HasDefaultSql("'draft'");
+                entity.Property(x => x.NormalizedStatus)
+                    .HasColumnName("normalized_status")
+                    .HasGeneratedColumnSql("lower(status)");
+                entity.HasIndex(x => x.Status)
+                    .HasDatabaseName("ix_advanced_order_lines_status")
+                    .IncludeProperties(x => x.NormalizedStatus)
+                    .HasFilter("status <> ''")
+                    .HasMethod("gin");
+            });
+
+            modelBuilder.Entity<AdvancedShipment>(entity =>
+            {
+                entity.ToTable("advanced_shipments");
+                entity.HasOne(x => x.OrderLine)
+                    .WithMany()
+                    .HasForeignKey(x => new { x.OrderId, x.LineNo })
+                    .HasConstraintName("fk_advanced_shipments_order_id_line_no");
+            });
+        }
+    }
+
+    public sealed class AdvancedOrderLine
+    {
+        public int OrderId { get; set; }
+
+        public int LineNo { get; set; }
+
+        public string Status { get; set; } = "";
+
+        public string NormalizedStatus { get; set; } = "";
+    }
+
+    public sealed class AdvancedShipment
+    {
+        public int Id { get; set; }
+
+        public int OrderId { get; set; }
+
+        public int LineNo { get; set; }
+
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+        public AdvancedOrderLine? OrderLine { get; set; }
     }
 }

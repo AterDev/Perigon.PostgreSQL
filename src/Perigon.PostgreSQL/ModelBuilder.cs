@@ -37,10 +37,16 @@ public sealed class ModelBuilder
                 continue;
             }
 
+            var primaryKeyPropertyNames = configuration.PrimaryKeyPropertyNames.Count > 0
+                ? configuration.PrimaryKeyPropertyNames
+                : model.PrimaryKeys.Select(static column => column.PropertyName).ToArray();
+
+            var primaryKeySet = new HashSet<string>(primaryKeyPropertyNames, StringComparer.Ordinal);
             var columns = model.Columns
                 .Select(column => configuration.Properties.TryGetValue(column.PropertyName, out var property)
                     ? column.Apply(property)
                     : column)
+                .Select(column => column.WithPrimaryKey(primaryKeySet.Contains(column.PropertyName)))
                 .ToArray();
 
             var indexes = MergeIndexes(model, configuration);
@@ -64,11 +70,22 @@ public sealed class ModelBuilder
                     throw new InvalidOperationException($"Fluent relationship between '{configuration.EntityType.FullName}' and '{relationship.PrincipalType.FullName}' could not be resolved from the registered DbContext models.");
                 }
 
-                var dependentColumn = dependent.GetColumn(relationship.DependentPropertyName ?? throw new InvalidOperationException(
-                    $"Fluent relationship on '{configuration.EntityType.FullName}' is missing HasForeignKey(...)."));
-                if (principal.PrimaryKey is null)
+                if (principal.PrimaryKeys.Count == 0)
                 {
                     throw new InvalidOperationException($"Principal entity '{principal.ClrType.FullName}' does not have a primary key for the configured fluent relationship.");
+                }
+
+                var dependentColumns = relationship.DependentPropertyNames.Select(dependent.GetColumn).ToArray();
+                if (dependentColumns.Length == 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Fluent relationship on '{configuration.EntityType.FullName}' is missing HasForeignKey(...).");
+                }
+
+                if (dependentColumns.Length != principal.PrimaryKeys.Count)
+                {
+                    throw new InvalidOperationException(
+                        $"Fluent relationship on '{configuration.EntityType.FullName}' uses {dependentColumns.Length} foreign key column(s), but principal '{principal.ClrType.FullName}' has {principal.PrimaryKeys.Count} primary key column(s).");
                 }
 
                 if (!explicitForeignKeys.TryGetValue(configuration.EntityType, out var foreignKeys))
@@ -78,11 +95,11 @@ public sealed class ModelBuilder
                 }
 
                 foreignKeys.Add(new ForeignKeyModel(
-                    relationship.ConstraintName ?? DefaultForeignKeyName(dependent, dependentColumn),
+                    relationship.ConstraintName ?? DefaultForeignKeyName(dependent, dependentColumns),
                     dependent,
-                    dependentColumn,
+                    dependentColumns,
                     principal,
-                    principal.PrimaryKey,
+                    principal.PrimaryKeys,
                     relationship.OnDelete));
             }
         }
@@ -90,7 +107,13 @@ public sealed class ModelBuilder
         return configured
             .Select(model => explicitForeignKeys.TryGetValue(model.ClrType, out var foreignKeys)
                 ? model.Apply(model.Schema, model.TableName, model.Columns, model.Comment, model.Indexes.Select(static index =>
-                    new IndexDefinition(index.IndexName, index.Columns.Select(column => column.PropertyName).ToArray(), index.IsUnique)).ToArray(), foreignKeys)
+                    new IndexDefinition(
+                        index.IndexName,
+                        index.Columns.Select(column => column.PropertyName).ToArray(),
+                        index.IsUnique,
+                        index.IncludeColumns.Select(column => column.PropertyName).ToArray(),
+                        index.Filter,
+                        index.Method)).ToArray(), foreignKeys)
                 : model)
             .ToArray();
     }
@@ -114,12 +137,24 @@ public sealed class ModelBuilder
         foreach (var index in model.Indexes)
         {
             var propertyNames = index.Columns.Select(column => column.PropertyName).ToArray();
-            merged[GetIndexKey(propertyNames)] = new IndexDefinition(index.IndexName, propertyNames, index.IsUnique);
+            merged[GetIndexKey(propertyNames)] = new IndexDefinition(
+                index.IndexName,
+                propertyNames,
+                index.IsUnique,
+                index.IncludeColumns.Select(column => column.PropertyName).ToArray(),
+                index.Filter,
+                index.Method);
         }
 
         foreach (var index in configuration.Indexes)
         {
-            merged[GetIndexKey(index.PropertyNames)] = new IndexDefinition(index.DatabaseName, index.PropertyNames, index.IsUnique);
+            merged[GetIndexKey(index.PropertyNames)] = new IndexDefinition(
+                index.DatabaseName,
+                index.PropertyNames,
+                index.IsUnique,
+                index.IncludePropertyNames,
+                index.Filter,
+                index.Method);
         }
 
         return merged.Values.ToArray();
@@ -130,9 +165,9 @@ public sealed class ModelBuilder
         return string.Join("|", propertyNames);
     }
 
-    private static string DefaultForeignKeyName(EntityModel dependent, ColumnModel column)
+    private static string DefaultForeignKeyName(EntityModel dependent, IReadOnlyList<ColumnModel> columns)
     {
-        return "fk_" + dependent.TableName + "_" + column.ColumnName;
+        return "fk_" + dependent.TableName + "_" + string.Join("_", columns.Select(column => column.ColumnName));
     }
 }
 
@@ -156,6 +191,12 @@ public sealed class EntityTypeBuilder<TEntity>
     public EntityTypeBuilder<TEntity> HasComment(string comment)
     {
         _configuration.Comment = comment;
+        return this;
+    }
+
+    public EntityTypeBuilder<TEntity> HasKey(Expression<Func<TEntity, object?>> expression)
+    {
+        _configuration.PrimaryKeyPropertyNames = ExpressionHelpers.ReadPropertyList(expression).ToArray();
         return this;
     }
 
@@ -230,6 +271,18 @@ public sealed class PropertyBuilder<TEntity, TProperty>
         return this;
     }
 
+    public PropertyBuilder<TEntity, TProperty> HasDefaultSql(string sql)
+    {
+        _configuration.DefaultSql = sql;
+        return this;
+    }
+
+    public PropertyBuilder<TEntity, TProperty> HasGeneratedColumnSql(string sql)
+    {
+        _configuration.GeneratedColumnSql = sql;
+        return this;
+    }
+
     public PropertyBuilder<TEntity, TProperty> IsUnicode(bool isUnicode = true)
     {
         _configuration.IsUnicode = isUnicode;
@@ -256,6 +309,24 @@ public sealed class IndexBuilder<TEntity>
     public IndexBuilder<TEntity> HasDatabaseName(string name)
     {
         _configuration.DatabaseName = name;
+        return this;
+    }
+
+    public IndexBuilder<TEntity> IncludeProperties(Expression<Func<TEntity, object?>> expression)
+    {
+        _configuration.IncludePropertyNames = ExpressionHelpers.ReadPropertyList(expression).ToArray();
+        return this;
+    }
+
+    public IndexBuilder<TEntity> HasFilter(string filter)
+    {
+        _configuration.Filter = filter;
+        return this;
+    }
+
+    public IndexBuilder<TEntity> HasMethod(string method)
+    {
+        _configuration.Method = method;
         return this;
     }
 }
@@ -296,7 +367,7 @@ public sealed class ReferenceCollectionBuilder<TEntity, TRelated>
 
     public ReferenceCollectionBuilder<TEntity, TRelated> HasForeignKey(Expression<Func<TEntity, object?>> expression)
     {
-        _configuration.DependentPropertyName = ExpressionHelpers.ReadSingleProperty(expression);
+        _configuration.DependentPropertyNames = ExpressionHelpers.ReadPropertyList(expression).ToArray();
         return this;
     }
 
@@ -327,6 +398,8 @@ internal sealed class EntityConfiguration
     public string? Schema { get; set; }
 
     public string? Comment { get; set; }
+
+    public IReadOnlyList<string> PrimaryKeyPropertyNames { get; set; } = [];
 
     public Dictionary<string, PropertyConfiguration> Properties { get; } = new(StringComparer.Ordinal);
 
@@ -388,6 +461,10 @@ internal sealed class PropertyConfiguration
     public string? Comment { get; set; }
 
     public bool? IsUnicode { get; set; }
+
+    public string? DefaultSql { get; set; }
+
+    public string? GeneratedColumnSql { get; set; }
 }
 
 internal sealed class IndexConfiguration
@@ -402,6 +479,12 @@ internal sealed class IndexConfiguration
     public string? DatabaseName { get; set; }
 
     public bool IsUnique { get; set; }
+
+    public IReadOnlyList<string> IncludePropertyNames { get; set; } = [];
+
+    public string? Filter { get; set; }
+
+    public string? Method { get; set; }
 }
 
 internal sealed class RelationshipConfiguration
@@ -417,7 +500,7 @@ internal sealed class RelationshipConfiguration
 
     public string? PrincipalNavigationName { get; set; }
 
-    public string? DependentPropertyName { get; set; }
+    public IReadOnlyList<string> DependentPropertyNames { get; set; } = [];
 
     public string? ConstraintName { get; set; }
 

@@ -31,7 +31,17 @@ public sealed class ScaffoldCodeGenerator
     {
         var builder = new StringBuilder();
         builder.AppendLine("using Perigon.PostgreSQL;");
+        if (database.Tables.Any(static table => table.ForeignKeys.Count > 0))
+        {
+            builder.AppendLine("using Perigon.PostgreSQL.Metadata;");
+        }
+
         builder.AppendLine("using Perigon.PostgreSQL.Options;");
+        if (database.Tables.Count > 0)
+        {
+            builder.AppendLine($"using {_options.EntityNamespace};");
+        }
+
         builder.AppendLine();
         builder.AppendLine($"namespace {_options.Namespace};");
         builder.AppendLine();
@@ -53,8 +63,26 @@ public sealed class ScaffoldCodeGenerator
             builder.AppendLine($"    public DbSet<{className}> {ToPlural(className)} => Set<{className}>();");
         }
 
+        var entityConfigurations = database.Tables
+            .Select(table => GenerateEntityConfiguration(table, names))
+            .Where(static configuration => !string.IsNullOrWhiteSpace(configuration))
+            .ToArray();
+
+        if (entityConfigurations.Length > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("    protected override void OnModelCreating(ModelBuilder modelBuilder)");
+            builder.AppendLine("    {");
+            foreach (var configuration in entityConfigurations)
+            {
+                builder.Append(configuration);
+            }
+
+            builder.AppendLine("    }");
+        }
+
         builder.AppendLine("}");
-        return new GeneratedFile(_options.ContextName + ".cs", builder.ToString());
+        return new GeneratedFile(_options.ContextRelativePath, builder.ToString());
     }
 
     private GeneratedFile GenerateEntity(TableModel table, IReadOnlyDictionary<(string Schema, string Name), string> names)
@@ -66,6 +94,16 @@ public sealed class ScaffoldCodeGenerator
         builder.AppendLine("using System;");
         builder.AppendLine("using System.ComponentModel.DataAnnotations;");
         builder.AppendLine("using System.ComponentModel.DataAnnotations.Schema;");
+        if (!string.IsNullOrWhiteSpace(table.Comment) || table.Columns.Any(static column => !string.IsNullOrWhiteSpace(column.Comment)))
+        {
+            builder.AppendLine("using PerigonCommentAttribute = Perigon.PostgreSQL.Attributes.CommentAttribute;");
+        }
+
+        if (table.Columns.Any(static column => column.Precision is not null))
+        {
+            builder.AppendLine("using PerigonPrecisionAttribute = Perigon.PostgreSQL.Attributes.PrecisionAttribute;");
+        }
+
         if (table.Indexes.Count > 0)
         {
             builder.AppendLine("using PerigonIndexAttribute = Perigon.PostgreSQL.Attributes.IndexAttribute;");
@@ -77,7 +115,7 @@ public sealed class ScaffoldCodeGenerator
         }
 
         builder.AppendLine();
-        builder.AppendLine($"namespace {_options.Namespace};");
+        builder.AppendLine($"namespace {_options.EntityNamespace};");
         builder.AppendLine();
         foreach (var index in table.Indexes)
         {
@@ -85,6 +123,11 @@ public sealed class ScaffoldCodeGenerator
             {
                 builder.AppendLine(attribute);
             }
+        }
+
+        if (!string.IsNullOrWhiteSpace(table.Comment))
+        {
+            builder.AppendLine($"[PerigonCommentAttribute({Literal(table.Comment!)})]");
         }
 
         builder.AppendLine(table.IsView
@@ -96,8 +139,10 @@ public sealed class ScaffoldCodeGenerator
         foreach (var column in table.Columns)
         {
             var propertyName = propertyNames[column.Name];
-            var isPrimaryKey = table.PrimaryKeyColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase);
-            var foreignKey = table.ForeignKeys.FirstOrDefault(fk => fk.ColumnName.Equals(column.Name, StringComparison.OrdinalIgnoreCase));
+            var isPrimaryKey = table.PrimaryKeyColumns.Count == 1 && table.PrimaryKeyColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase);
+            var foreignKey = table.ForeignKeys.FirstOrDefault(fk =>
+                fk.ColumnNames.Count == 1 &&
+                fk.ColumnName.Equals(column.Name, StringComparison.OrdinalIgnoreCase));
             if (isPrimaryKey)
             {
                 builder.AppendLine("    [Key]");
@@ -123,6 +168,23 @@ public sealed class ScaffoldCodeGenerator
                 builder.AppendLine("    [Required]");
             }
 
+            if (column.MaxLength is > 0)
+            {
+                builder.AppendLine($"    [MaxLength({column.MaxLength.Value})]");
+            }
+
+            if (column.Precision is not null)
+            {
+                builder.AppendLine(column.Scale is not null
+                    ? $"    [PerigonPrecisionAttribute({column.Precision.Value}, {column.Scale.Value})]"
+                    : $"    [PerigonPrecisionAttribute({column.Precision.Value})]");
+            }
+
+            if (!string.IsNullOrWhiteSpace(column.Comment))
+            {
+                builder.AppendLine($"    [PerigonCommentAttribute({Literal(column.Comment!)})]");
+            }
+
             builder.AppendLine($"    public {ToClrType(column)} {propertyName} {{ get; set; }}{DefaultValue(column)}");
             builder.AppendLine();
         }
@@ -141,7 +203,155 @@ public sealed class ScaffoldCodeGenerator
         }
 
         builder.AppendLine("}");
-        return new GeneratedFile(className + ".cs", builder.ToString());
+        return new GeneratedFile(Path.Combine(_options.EntityRelativeDirectory, className + ".cs"), builder.ToString());
+    }
+
+    private static string GenerateEntityConfiguration(TableModel table, IReadOnlyDictionary<(string Schema, string Name), string> names)
+    {
+        if (!names.TryGetValue((table.Schema, table.Name), out var dependentClass))
+        {
+            return string.Empty;
+        }
+
+        var propertyNames = CreatePropertyNames(table.Columns);
+        var navigationNames = CreateNavigationNames(table, names, propertyNames.Values);
+        var builder = new StringBuilder();
+        var emitted = false;
+        void EnsureHeader()
+        {
+            if (emitted)
+            {
+                return;
+            }
+
+            emitted = true;
+            builder.AppendLine($"        modelBuilder.Entity<{dependentClass}>(entity =>");
+            builder.AppendLine("        {");
+        }
+
+        if (table.PrimaryKeyColumns.Count > 1)
+        {
+            var primaryKeyProperties = table.PrimaryKeyColumns
+                .Select(columnName => propertyNames.TryGetValue(columnName, out var propertyName) ? propertyName : null)
+                .Where(static propertyName => propertyName is not null)
+                .Cast<string>()
+                .ToArray();
+            if (primaryKeyProperties.Length == table.PrimaryKeyColumns.Count)
+            {
+                EnsureHeader();
+                builder.AppendLine($"            entity.HasKey(x => {BuildPropertyAccess(primaryKeyProperties, "x")});");
+            }
+        }
+
+        foreach (var column in table.Columns)
+        {
+            if (!propertyNames.TryGetValue(column.Name, out var propertyName))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(column.DefaultValue) && !column.IsIdentity && !column.IsGenerated)
+            {
+                EnsureHeader();
+                builder.AppendLine($"            entity.Property(x => x.{propertyName}).HasDefaultSql({Literal(column.DefaultValue!)});");
+            }
+
+            if (!string.IsNullOrWhiteSpace(column.GeneratedExpression))
+            {
+                EnsureHeader();
+                builder.AppendLine($"            entity.Property(x => x.{propertyName}).HasGeneratedColumnSql({Literal(column.GeneratedExpression!)});");
+            }
+        }
+
+        foreach (var index in table.Indexes)
+        {
+            if (IsSimpleIndex(index))
+            {
+                continue;
+            }
+
+            var indexProperties = index.ColumnNames
+                .Select(columnName => propertyNames.TryGetValue(columnName, out var propertyName) ? propertyName : null)
+                .Where(static propertyName => propertyName is not null)
+                .Cast<string>()
+                .ToArray();
+            if (indexProperties.Length == 0 || indexProperties.Length != index.ColumnNames.Count)
+            {
+                continue;
+            }
+
+            EnsureHeader();
+            builder.Append($"            entity.HasIndex(x => {BuildPropertyAccess(indexProperties, "x")})");
+            if (index.IsUnique)
+            {
+                builder.AppendLine();
+                builder.Append("                .IsUnique()");
+            }
+
+            builder.AppendLine();
+            builder.Append($"                .HasDatabaseName({Literal(index.Name)})");
+            if (index.IncludeColumnNames.Count > 0)
+            {
+                var includeProperties = index.IncludeColumnNames
+                    .Select(columnName => propertyNames.TryGetValue(columnName, out var propertyName) ? propertyName : null)
+                    .Where(static propertyName => propertyName is not null)
+                    .Cast<string>()
+                    .ToArray();
+                if (includeProperties.Length == index.IncludeColumnNames.Count)
+                {
+                    builder.AppendLine();
+                    builder.Append($"                .IncludeProperties(x => {BuildPropertyAccess(includeProperties, "x")})");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(index.Filter))
+            {
+                builder.AppendLine();
+                builder.Append($"                .HasFilter({Literal(index.Filter!)})");
+            }
+
+            if (!string.IsNullOrWhiteSpace(index.Method))
+            {
+                builder.AppendLine();
+                builder.Append($"                .HasMethod({Literal(index.Method!)})");
+            }
+
+            builder.AppendLine(";");
+        }
+
+        foreach (var foreignKey in table.ForeignKeys)
+        {
+            var dependentProperties = foreignKey.ColumnNames
+                .Select(columnName => propertyNames.TryGetValue(columnName, out var propertyName) ? propertyName : null)
+                .Where(static propertyName => propertyName is not null)
+                .Cast<string>()
+                .ToArray();
+            if (dependentProperties.Length != foreignKey.ColumnNames.Count ||
+                !navigationNames.TryGetValue(foreignKey, out var navigationName))
+            {
+                continue;
+            }
+
+            EnsureHeader();
+            builder.AppendLine($"            entity.HasOne(x => x.{navigationName})");
+            builder.AppendLine("                .WithMany()");
+            builder.AppendLine($"                .HasForeignKey(x => {BuildPropertyAccess(dependentProperties, "x")})");
+            builder.AppendLine($"                .HasConstraintName({Literal(foreignKey.ConstraintName)})");
+            if (!string.Equals(foreignKey.OnDeleteAction, "NoAction", StringComparison.Ordinal))
+            {
+                builder.AppendLine($"                .OnDelete(ReferentialAction.{foreignKey.OnDeleteAction})");
+            }
+
+            builder.AppendLine("                ;");
+        }
+
+        if (emitted)
+        {
+            builder.AppendLine("        });");
+            return builder.ToString();
+        }
+
+        return string.Empty;
     }
 
     private static IReadOnlyDictionary<(string Schema, string Name), string> CreateClassNames(IReadOnlyList<TableModel> tables)
@@ -192,7 +402,10 @@ public sealed class ScaffoldCodeGenerator
             var duplicatePrincipal = table.ForeignKeys.Count(item =>
                 item.PrincipalSchema.Equals(foreignKey.PrincipalSchema, StringComparison.OrdinalIgnoreCase) &&
                 item.PrincipalTable.Equals(foreignKey.PrincipalTable, StringComparison.OrdinalIgnoreCase)) > 1;
-            var baseName = duplicatePrincipal ? principalClass + ToPropertyName(foreignKey.ColumnName) : principalClass;
+            var navigationSuffix = foreignKey.ColumnNames.Count == 1
+                ? ToPropertyName(foreignKey.ColumnName)
+                : string.Concat(foreignKey.ColumnNames.Select(ToPropertyName));
+            var baseName = duplicatePrincipal ? principalClass + navigationSuffix : principalClass;
             navigationNames[foreignKey] = MakeUnique(baseName, used);
         }
 
@@ -201,6 +414,12 @@ public sealed class ScaffoldCodeGenerator
 
     private static bool TryBuildIndexAttribute(IndexModel index, IReadOnlyDictionary<string, string> propertyNames, out string attribute)
     {
+        if (!IsSimpleIndex(index))
+        {
+            attribute = string.Empty;
+            return false;
+        }
+
         var properties = new List<string>(index.ColumnNames.Count);
         foreach (var columnName in index.ColumnNames)
         {
@@ -230,6 +449,20 @@ public sealed class ScaffoldCodeGenerator
         return true;
     }
 
+    private static bool IsSimpleIndex(IndexModel index)
+    {
+        return index.IncludeColumnNames.Count == 0 &&
+               string.IsNullOrWhiteSpace(index.Filter) &&
+               string.IsNullOrWhiteSpace(index.Method);
+    }
+
+    private static string BuildPropertyAccess(IReadOnlyList<string> propertyNames, string parameterName)
+    {
+        return propertyNames.Count == 1
+            ? parameterName + "." + propertyNames[0]
+            : "new { " + string.Join(", ", propertyNames.Select(propertyName => parameterName + "." + propertyName)) + " }";
+    }
+
     private static string ToStoreType(ColumnModel column)
     {
         return column.DataType == "ARRAY" && column.UdtName.StartsWith('_') ? column.UdtName[1..] + "[]" : column.DataType;
@@ -248,7 +481,7 @@ public sealed class ScaffoldCodeGenerator
             "numeric" => "decimal",
             "boolean" => "bool",
             "uuid" => "Guid",
-            "timestamp with time zone" => "DateTime",
+            "timestamp with time zone" => "DateTimeOffset",
             "timestamp without time zone" => "DateTime",
             "date" => "DateOnly",
             "bytea" => "byte[]",
@@ -274,7 +507,8 @@ public sealed class ScaffoldCodeGenerator
             "numeric" => "decimal[]",
             "bool" => "bool[]",
             "uuid" => "Guid[]",
-            "timestamptz" => "DateTime[]",
+            "timestamptz" => "DateTimeOffset[]",
+            "date" => "DateOnly[]",
             _ => "string[]"
         };
     }

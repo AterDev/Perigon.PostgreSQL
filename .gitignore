@@ -1,4 +1,5 @@
 artifacts/
+.artifacts/
 bin/
 obj/
 .vs/

@@ -6,9 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>perigon</ToolCommandName>
+    <ToolCommandName>dotnet-perigon</ToolCommandName>
     <PackageId>Perigon.PostgreSQL.Tools</PackageId>
     <Title>Perigon.PostgreSQL.Tools</Title>
+    <Version>0.1.4</Version>
     <Description>Command line tools for Perigon.PostgreSQL reverse engineering and scaffolding.</Description>
     <IsPackable>true</IsPackable>
   </PropertyGroup>

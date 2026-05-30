@@ -5,28 +5,43 @@ public sealed class ForeignKeyModel
     public ForeignKeyModel(
         string constraintName,
         EntityModel dependentEntity,
-        ColumnModel dependentColumn,
+        IReadOnlyList<ColumnModel> dependentColumns,
         EntityModel principalEntity,
-        ColumnModel principalColumn,
+        IReadOnlyList<ColumnModel> principalColumns,
         ReferentialAction onDelete = ReferentialAction.NoAction)
     {
         ConstraintName = constraintName;
         DependentEntity = dependentEntity;
-        DependentColumn = dependentColumn;
+        DependentColumns = dependentColumns;
         PrincipalEntity = principalEntity;
-        PrincipalColumn = principalColumn;
+        PrincipalColumns = principalColumns;
         OnDelete = onDelete;
+    }
+
+    public ForeignKeyModel(
+        string constraintName,
+        EntityModel dependentEntity,
+        ColumnModel dependentColumn,
+        EntityModel principalEntity,
+        ColumnModel principalColumn,
+        ReferentialAction onDelete = ReferentialAction.NoAction)
+        : this(constraintName, dependentEntity, [dependentColumn], principalEntity, [principalColumn], onDelete)
+    {
     }
 
     public string ConstraintName { get; }
 
     public EntityModel DependentEntity { get; }
 
-    public ColumnModel DependentColumn { get; }
+    public IReadOnlyList<ColumnModel> DependentColumns { get; }
 
     public EntityModel PrincipalEntity { get; }
 
-    public ColumnModel PrincipalColumn { get; }
+    public IReadOnlyList<ColumnModel> PrincipalColumns { get; }
 
     public ReferentialAction OnDelete { get; }
+
+    public ColumnModel DependentColumn => DependentColumns[0];
+
+    public ColumnModel PrincipalColumn => PrincipalColumns[0];
 }

@@ -21,7 +21,9 @@ public sealed class ColumnModel
         int? precision = null,
         int? scale = null,
         string? comment = null,
-        bool? isUnicode = null)
+        bool? isUnicode = null,
+        string? defaultSql = null,
+        string? generatedColumnSql = null)
         : this(
             property.DeclaringType ?? throw new ArgumentException("Property must have a declaring type.", nameof(property)),
             property.Name,
@@ -37,7 +39,9 @@ public sealed class ColumnModel
             precision,
             scale,
             comment,
-            isUnicode)
+            isUnicode,
+            defaultSql,
+            generatedColumnSql)
     {
         _property = property;
     }
@@ -57,7 +61,9 @@ public sealed class ColumnModel
         int? precision,
         int? scale,
         string? comment,
-        bool? isUnicode)
+        bool? isUnicode,
+        string? defaultSql,
+        string? generatedColumnSql)
     {
         DeclaringType = declaringType;
         PropertyName = propertyName;
@@ -74,6 +80,8 @@ public sealed class ColumnModel
         Scale = scale;
         Comment = comment;
         IsUnicode = isUnicode;
+        DefaultSql = defaultSql;
+        GeneratedColumnSql = generatedColumnSql;
     }
 
     public PropertyInfo Property
@@ -116,6 +124,10 @@ public sealed class ColumnModel
 
     public bool? IsUnicode { get; }
 
+    public string? DefaultSql { get; }
+
+    public string? GeneratedColumnSql { get; }
+
     public bool IsWritable => !IsIdentity && !IsGenerated;
 
     internal ColumnModel Apply(PropertyConfiguration configuration)
@@ -133,8 +145,30 @@ public sealed class ColumnModel
             configuration.Precision ?? Precision,
             configuration.Scale ?? Scale,
             configuration.Comment ?? Comment,
-            configuration.IsUnicode ?? IsUnicode);
+                configuration.IsUnicode ?? IsUnicode,
+                configuration.DefaultSql ?? DefaultSql,
+                configuration.GeneratedColumnSql ?? GeneratedColumnSql);
     }
+
+        internal ColumnModel WithPrimaryKey(bool isPrimaryKey)
+        {
+            return new ColumnModel(
+                Property,
+                ColumnName,
+                TypeName,
+                isPrimaryKey,
+                IsIdentity,
+                IsGenerated,
+                IsArray,
+                IsNullable,
+                MaxLength,
+                Precision,
+                Scale,
+                Comment,
+                IsUnicode,
+                DefaultSql,
+                GeneratedColumnSql);
+        }
 
     public static ColumnModel CreateGenerated<TDeclaring, TProperty>(
         string propertyName,
@@ -149,7 +183,9 @@ public sealed class ColumnModel
         int? precision = null,
         int? scale = null,
         string? comment = null,
-        bool? isUnicode = null)
+        bool? isUnicode = null,
+        string? defaultSql = null,
+        string? generatedColumnSql = null)
     {
         return new ColumnModel(
             typeof(TDeclaring),
@@ -166,6 +202,8 @@ public sealed class ColumnModel
             precision,
             scale,
             comment,
-            isUnicode);
+            isUnicode,
+            defaultSql,
+            generatedColumnSql);
     }
 }

@@ -23,9 +23,9 @@ internal static class CreateTableSqlBuilder
             definitions.Add("    " + BuildColumn(column));
         }
 
-        if (model.PrimaryKey is not null)
+        if (model.PrimaryKeys.Count > 0)
         {
-            definitions.Add($"    CONSTRAINT {Identifier.Quote(DefaultPrimaryKeyName(model))} PRIMARY KEY ({Identifier.Quote(model.PrimaryKey.ColumnName)})");
+            definitions.Add($"    CONSTRAINT {Identifier.Quote(DefaultPrimaryKeyName(model))} PRIMARY KEY ({string.Join(", ", model.PrimaryKeys.Select(column => Identifier.Quote(column.ColumnName)))})");
         }
 
         builder.AppendLine(string.Join("," + Environment.NewLine, definitions));
@@ -41,11 +41,11 @@ internal static class CreateTableSqlBuilder
         alter.Append(" ADD CONSTRAINT ");
         alter.Append(Identifier.Quote(foreignKey.ConstraintName));
         alter.Append(" FOREIGN KEY (");
-        alter.Append(Identifier.Quote(foreignKey.DependentColumn.ColumnName));
+        alter.Append(string.Join(", ", foreignKey.DependentColumns.Select(column => Identifier.Quote(column.ColumnName))));
         alter.Append(") REFERENCES ");
         alter.Append(foreignKey.PrincipalEntity.StoreObjectName);
         alter.Append(" (");
-        alter.Append(Identifier.Quote(foreignKey.PrincipalColumn.ColumnName));
+        alter.Append(string.Join(", ", foreignKey.PrincipalColumns.Select(column => Identifier.Quote(column.ColumnName))));
         alter.Append(')');
 
         var action = ToSql(foreignKey.OnDelete);
@@ -79,11 +79,11 @@ internal static class CreateTableSqlBuilder
         builder.Append(" ADD CONSTRAINT ");
         builder.Append(Identifier.Quote(foreignKey.ConstraintName));
         builder.Append(" FOREIGN KEY (");
-        builder.Append(Identifier.Quote(foreignKey.DependentColumn.ColumnName));
+        builder.Append(string.Join(", ", foreignKey.DependentColumns.Select(column => Identifier.Quote(column.ColumnName))));
         builder.Append(") REFERENCES ");
         builder.Append(foreignKey.PrincipalEntity.StoreObjectName);
         builder.Append(" (");
-        builder.Append(Identifier.Quote(foreignKey.PrincipalColumn.ColumnName));
+        builder.Append(string.Join(", ", foreignKey.PrincipalColumns.Select(column => Identifier.Quote(column.ColumnName))));
         builder.Append(')');
 
         var action = ToSql(foreignKey.OnDelete);
@@ -100,7 +100,36 @@ internal static class CreateTableSqlBuilder
     {
         var unique = index.IsUnique ? "UNIQUE " : "";
         var columns = string.Join(", ", index.Columns.Select(column => Identifier.Quote(column.ColumnName)));
-        return $"CREATE {unique}INDEX IF NOT EXISTS {Identifier.Quote(index.IndexName)} ON {index.Entity.StoreObjectName} ({columns})";
+        var builder = new StringBuilder();
+        builder.Append("CREATE ");
+        builder.Append(unique);
+        builder.Append("INDEX IF NOT EXISTS ");
+        builder.Append(Identifier.Quote(index.IndexName));
+        builder.Append(" ON ");
+        builder.Append(index.Entity.StoreObjectName);
+        if (!string.IsNullOrWhiteSpace(index.Method))
+        {
+            builder.Append(" USING ");
+            builder.Append(index.Method);
+        }
+
+        builder.Append(" (");
+        builder.Append(columns);
+        builder.Append(')');
+        if (index.IncludeColumns.Count > 0)
+        {
+            builder.Append(" INCLUDE (");
+            builder.Append(string.Join(", ", index.IncludeColumns.Select(column => Identifier.Quote(column.ColumnName))));
+            builder.Append(')');
+        }
+
+        if (!string.IsNullOrWhiteSpace(index.Filter))
+        {
+            builder.Append(" WHERE ");
+            builder.Append(index.Filter);
+        }
+
+        return builder.ToString();
     }
 
     public static IReadOnlyList<string> BuildComments(EntityModel model)
@@ -126,20 +155,30 @@ internal static class CreateTableSqlBuilder
 
     private static string BuildColumn(ColumnModel column)
     {
-        if (column.IsGenerated)
-        {
-            throw new InvalidOperationException(
-                $"Generated column '{column.DeclaringType.Name}.{column.PropertyName}' requires a SQL generation expression and is not supported by EnsureCreated yet.");
-        }
-
         var builder = new StringBuilder();
         builder.Append(Identifier.Quote(column.ColumnName));
         builder.Append(' ');
         builder.Append(PostgresTypeMapper.Map(column));
 
-        if (column.IsIdentity)
+        if (column.GeneratedColumnSql is not null)
+        {
+            builder.Append(" GENERATED ALWAYS AS (");
+            builder.Append(column.GeneratedColumnSql);
+            builder.Append(") STORED");
+        }
+        else if (column.IsGenerated)
+        {
+            throw new InvalidOperationException(
+                $"Generated column '{column.DeclaringType.Name}.{column.PropertyName}' requires a SQL generation expression and is not supported by EnsureCreated yet.");
+        }
+        else if (column.IsIdentity)
         {
             builder.Append(" GENERATED ALWAYS AS IDENTITY");
+        }
+        else if (!string.IsNullOrWhiteSpace(column.DefaultSql))
+        {
+            builder.Append(" DEFAULT ");
+            builder.Append(column.DefaultSql);
         }
 
         if (column.IsPrimaryKey || !column.IsNullable)

@@ -23,10 +23,10 @@ internal static class RelationshipConventions
                 var principalTypeName = column.PropertyName[..^2];
                 var principal = models.FirstOrDefault(model =>
                     model.ClrType.Name.Equals(principalTypeName, StringComparison.Ordinal) &&
-                    model.PrimaryKey is not null &&
-                    SameStoreType(column.ClrType, model.PrimaryKey.ClrType));
+                    model.PrimaryKeys.Count == 1 &&
+                    SameStoreType(column.ClrType, model.PrimaryKeys[0].ClrType));
 
-                if (principal?.PrimaryKey is null)
+                if (principal?.PrimaryKeys.Count != 1)
                 {
                     continue;
                 }
@@ -41,7 +41,7 @@ internal static class RelationshipConventions
                     dependent,
                     column,
                     principal,
-                    principal.PrimaryKey));
+                    principal.PrimaryKeys[0]));
             }
         }
 
@@ -86,7 +86,7 @@ internal static class RelationshipConventions
                 principal = models.FirstOrDefault(model => model.ClrType == property.PropertyType);
             }
 
-            if (dependentColumn is null || principal?.PrimaryKey is null || !SameStoreType(dependentColumn.ClrType, principal.PrimaryKey.ClrType))
+            if (dependentColumn is null || principal?.PrimaryKeys.Count != 1 || !SameStoreType(dependentColumn.ClrType, principal.PrimaryKeys[0].ClrType))
             {
                 continue;
             }
@@ -101,7 +101,7 @@ internal static class RelationshipConventions
                 dependent,
                 dependentColumn,
                 principal,
-                principal.PrimaryKey));
+                principal.PrimaryKeys[0]));
         }
     }
 

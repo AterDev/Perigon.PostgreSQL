@@ -19,8 +19,8 @@ internal static class InsertManySqlBuilder
         var columnSql = string.Join(", ", columns.Select(c => Identifier.Quote(c.ColumnName)));
         var rows = entities.Select(entity =>
             "(" + string.Join(", ", columns.Select(c => parameters.Add(EntityValueAccessorRegistry.GetValue(c, entity), InferDbType(c)))) + ")");
-        var returningColumns = options?.ReturnAllColumns == false && model.PrimaryKey is not null
-            ? [model.PrimaryKey]
+        var returningColumns = options?.ReturnAllColumns == false && model.PrimaryKeys.Count > 0
+            ? model.PrimaryKeys
             : model.Columns;
 
         var sql = $"INSERT INTO {model.StoreObjectName} ({columnSql}) VALUES {string.Join(", ", rows)} RETURNING " +

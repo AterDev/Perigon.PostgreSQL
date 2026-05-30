@@ -22,7 +22,8 @@ public sealed class EntityModel
         Schema = schema;
         TableName = tableName;
         Columns = columns;
-        PrimaryKey = columns.FirstOrDefault(c => c.IsPrimaryKey);
+        PrimaryKeys = columns.Where(static c => c.IsPrimaryKey).ToArray();
+        PrimaryKey = PrimaryKeys.Count == 1 ? PrimaryKeys[0] : null;
         ForeignKeys = foreignKeys;
         Indexes = CreateIndexes(indexes);
         IsView = isView;
@@ -38,6 +39,8 @@ public sealed class EntityModel
     public string TableName { get; }
 
     public IReadOnlyList<ColumnModel> Columns { get; }
+
+    public IReadOnlyList<ColumnModel> PrimaryKeys { get; }
 
     public ColumnModel? PrimaryKey { get; }
 
@@ -187,10 +190,11 @@ public sealed class EntityModel
         foreach (var definition in definitions)
         {
             var columns = definition.PropertyNames.Select(GetColumn).ToArray();
+            var includeColumns = definition.IncludePropertyNames.Select(GetColumn).ToArray();
             var name = string.IsNullOrWhiteSpace(definition.Name)
                 ? DefaultIndexName(columns, definition.IsUnique)
                 : definition.Name!;
-            indexes.Add(new IndexModel(name, this, columns, definition.IsUnique));
+            indexes.Add(new IndexModel(name, this, columns, definition.IsUnique, includeColumns, definition.Filter, definition.Method));
         }
 
         return indexes;
