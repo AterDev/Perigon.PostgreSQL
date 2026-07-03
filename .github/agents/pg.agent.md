@@ -1,6 +1,6 @@
 ---
 description: "Use when implementing or reviewing Perigon.PostgreSQL features: LINQ translation, SQL generation, NativeAOT safety, Npgsql execution, arrays, JSONB, DML, bulk insert, include, group by, tests, and docs."
-name: "engineer"
+name: "pg"
 argument-hint: "Describe the Perigon.PostgreSQL feature, bug, or test work to perform."
 user-invocable: true
 ---
