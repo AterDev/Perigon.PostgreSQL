@@ -1,4 +1,5 @@
 using Npgsql;
+using Microsoft.Extensions.Logging;
 
 namespace Perigon.PostgreSQL.Options;
 
@@ -33,6 +34,13 @@ public sealed class DbContextOptionsBuilder
     public DbContextOptionsBuilder EnableSensitiveLogging(bool enabled = true)
     {
         _options.SensitiveLoggingEnabled = enabled;
+        return this;
+    }
+
+    public DbContextOptionsBuilder UseLoggerFactory(ILoggerFactory loggerFactory)
+    {
+        ArgumentNullException.ThrowIfNull(loggerFactory);
+        _options.LoggerFactory = loggerFactory;
         return this;
     }
 
@@ -99,6 +107,7 @@ public sealed class DbContextOptionsBuilder
             ConnectionString = _options.ConnectionString,
             DataSource = _options.DataSource,
             SensitiveLoggingEnabled = _options.SensitiveLoggingEnabled,
+            LoggerFactory = _options.LoggerFactory,
             CommandTimeout = _options.CommandTimeout,
             ConnectionTimeout = _options.ConnectionTimeout,
             PoolingEnabled = _options.PoolingEnabled,

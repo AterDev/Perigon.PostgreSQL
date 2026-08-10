@@ -13,6 +13,14 @@ namespace Perigon.PostgreSQL.SourceGeneration;
 [Generator]
 public sealed class EntityModelGenerator : IIncrementalGenerator
 {
+    private static readonly DiagnosticDescriptor UnsupportedMaterializer = new(
+        id: "PGSG001",
+        title: "Generated materializer requires a public parameterless constructor",
+        messageFormat: "Type '{0}' is not supported by the generated materializer because it has no public parameterless constructor",
+        category: "Perigon.PostgreSQL.SourceGeneration",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var dbSetEntities = context.SyntaxProvider
@@ -23,13 +31,16 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         var materializerTypes = context.SyntaxProvider
             .CreateSyntaxProvider(
-                static (node, _) => node is ClassDeclarationSyntax,
+                static (node, _) => node is ClassDeclarationSyntax or RecordDeclarationSyntax,
                 static (syntaxContext, _) => TryReadMaterializerType(syntaxContext))
             .Where(static type => type is not null);
 
         context.RegisterSourceOutput(
             dbSetEntities.Collect().Combine(materializerTypes.Collect()),
-            static (productionContext, input) => Execute(productionContext, input.Left, input.Right));
+            static (productionContext, input) => Execute(
+                productionContext,
+                input.Left,
+                input.Right));
     }
 
     private static DbSetInfo? TryReadDbSetInfo(GeneratorSyntaxContext context)
@@ -52,8 +63,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
     private static INamedTypeSymbol? TryReadMaterializerType(GeneratorSyntaxContext context)
     {
-        var declaration = (ClassDeclarationSyntax)context.Node;
-        if (context.SemanticModel.GetDeclaredSymbol(declaration) is not INamedTypeSymbol type ||
+        if (context.SemanticModel.GetDeclaredSymbol(context.Node) is not INamedTypeSymbol type ||
             type.IsAbstract ||
             type.IsGenericType ||
             !IsAccessibleFromGeneratedCode(type) ||
@@ -75,6 +85,19 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         var distinct = new Dictionary<string, EntityInfo>(StringComparer.Ordinal);
         var contexts = new Dictionary<string, ContextInfo>(StringComparer.Ordinal);
         var materializers = new Dictionary<string, MaterializerInfo>(StringComparer.Ordinal);
+        var reportedUnsupported = new HashSet<string>(StringComparer.Ordinal);
+
+        void ReportUnsupported(INamedTypeSymbol type)
+        {
+            if (reportedUnsupported.Add(type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    UnsupportedMaterializer,
+                    type.Locations.FirstOrDefault(),
+                    type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
+            }
+        }
+
         foreach (var dbSet in dbSets)
         {
             if (dbSet is null)
@@ -84,7 +107,14 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
             var info = ReadEntity(dbSet.EntityType);
             distinct[info.FullName] = info;
-            materializers[info.FullName] = info.ToMaterializerInfo();
+            if (HasPublicParameterlessConstructor(dbSet.EntityType))
+            {
+                materializers[info.FullName] = info.ToMaterializerInfo();
+            }
+            else
+            {
+                ReportUnsupported(dbSet.EntityType);
+            }
 
             var contextFullName = dbSet.ContextType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
             if (!contexts.TryGetValue(contextFullName, out var contextInfo))
@@ -249,7 +279,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 scale,
                 Literal(ReadComment(commentAttribute)),
                 ReadUnicode(unicodeAttribute),
-            property.SetMethod is { DeclaredAccessibility: Accessibility.Public });
+            property.SetMethod is { DeclaredAccessibility: Accessibility.Public },
+            property.SetMethod?.IsInitOnly == true);
     }
 
     private static string GenerateRegistrationSource(
@@ -355,8 +386,26 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             builder.AppendLine();
             builder.AppendLine($"        private static {entity.FullName} Materialize_{entity.SafeName}(global::Npgsql.NpgsqlDataReader reader)");
             builder.AppendLine("        {");
-            builder.AppendLine($"            var entity = new {entity.FullName}();");
-            foreach (var column in entity.Columns.Where(static column => column.CanWrite))
+            var initColumns = entity.Columns
+                .Where(static column => column.CanWrite && column.IsInitOnly)
+                .ToArray();
+            if (initColumns.Length == 0)
+            {
+                builder.AppendLine($"            var entity = new {entity.FullName}();");
+            }
+            else
+            {
+                builder.AppendLine($"            var entity = new {entity.FullName}");
+                builder.AppendLine("            {");
+                foreach (var column in initColumns)
+                {
+                    builder.AppendLine($"                {column.MemberAccessName} = ReadValue<{column.ReadValueType}>(reader, {column.ColumnNameLiteral}, {Literal(column.PropertyName)}),");
+                }
+
+                builder.AppendLine("            };");
+            }
+
+            foreach (var column in entity.Columns.Where(static column => column.CanWrite && !column.IsInitOnly))
             {
                 builder.AppendLine($"            var ordinal_{column.SafeName} = TryGetOrdinal(reader, {column.ColumnNameLiteral});");
                 builder.AppendLine($"            if (ordinal_{column.SafeName} < 0)");
@@ -366,7 +415,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 builder.AppendLine();
                 builder.AppendLine($"            if (ordinal_{column.SafeName} >= 0 && !reader.IsDBNull(ordinal_{column.SafeName}))");
                 builder.AppendLine("            {");
-                builder.AppendLine($"                entity.{column.MemberAccessName} = reader.GetFieldValue<{column.ReadValueType}>(ordinal_{column.SafeName});");
+                builder.AppendLine($"                entity.{column.MemberAccessName} = ConvertValue<{column.ReadValueType}>(reader.GetValue(ordinal_{column.SafeName}));");
                 builder.AppendLine("            }");
                 builder.AppendLine();
             }
@@ -386,6 +435,46 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         builder.AppendLine("            {");
         builder.AppendLine("                return -1;");
         builder.AppendLine("            }");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        private static T ReadValue<T>(global::Npgsql.NpgsqlDataReader reader, string columnName, string propertyName)");
+        builder.AppendLine("        {");
+        builder.AppendLine("            var ordinal = TryGetOrdinal(reader, columnName);");
+        builder.AppendLine("            if (ordinal < 0)");
+        builder.AppendLine("            {");
+        builder.AppendLine("                ordinal = TryGetOrdinal(reader, propertyName);");
+        builder.AppendLine("            }");
+        builder.AppendLine();
+        builder.AppendLine("            return ordinal >= 0 && !reader.IsDBNull(ordinal)");
+        builder.AppendLine("                ? ConvertValue<T>(reader.GetValue(ordinal))");
+        builder.AppendLine("                : default!;");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        private static T ConvertValue<T>(object value)");
+        builder.AppendLine("        {");
+        builder.AppendLine("            if (value is T typed)");
+        builder.AppendLine("            {");
+        builder.AppendLine("                return typed;");
+        builder.AppendLine("            }");
+        builder.AppendLine();
+        builder.AppendLine("            var targetType = global::System.Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);");
+        builder.AppendLine();
+        builder.AppendLine("            if (targetType.IsEnum)");
+        builder.AppendLine("            {");
+        builder.AppendLine("                return value is string text");
+        builder.AppendLine("                    ? (T)global::System.Enum.Parse(targetType, text, true)");
+        builder.AppendLine("                    : (T)global::System.Enum.ToObject(targetType, value);");
+        builder.AppendLine("            }");
+        builder.AppendLine();
+        builder.AppendLine("            if (targetType == typeof(global::System.DateTimeOffset) && value is global::System.DateTime dateTime)");
+        builder.AppendLine("            {");
+        builder.AppendLine("                var utc = dateTime.Kind == global::System.DateTimeKind.Unspecified");
+        builder.AppendLine("                    ? global::System.DateTime.SpecifyKind(dateTime, global::System.DateTimeKind.Utc)");
+        builder.AppendLine("                    : dateTime.ToUniversalTime();");
+        builder.AppendLine("                return (T)(object)new global::System.DateTimeOffset(utc, global::System.TimeSpan.Zero);");
+        builder.AppendLine("            }");
+        builder.AppendLine();
+        builder.AppendLine("            return (T)global::System.Convert.ChangeType(value, targetType, global::System.Globalization.CultureInfo.InvariantCulture);");
         builder.AppendLine("        }");
         builder.AppendLine("    }");
         builder.AppendLine("}");
@@ -598,11 +687,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
     private static string ReadValueType(ITypeSymbol type)
     {
-        if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol nullable)
-        {
-            return nullable.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-        }
-
         return type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
     }
 
@@ -670,7 +754,53 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             return "null";
         }
 
-        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        var builder = new StringBuilder(value.Length + 2);
+        builder.Append('"');
+        foreach (var current in value)
+        {
+            switch (current)
+            {
+                case '\\':
+                    builder.Append("\\\\");
+                    break;
+                case '"':
+                    builder.Append("\\\"");
+                    break;
+                case '\n':
+                    builder.Append("\\n");
+                    break;
+                case '\r':
+                    builder.Append("\\r");
+                    break;
+                case '\t':
+                    builder.Append("\\t");
+                    break;
+                case '\0':
+                    builder.Append("\\0");
+                    break;
+                case '\b':
+                    builder.Append("\\b");
+                    break;
+                case '\f':
+                    builder.Append("\\f");
+                    break;
+                default:
+                    if (char.IsControl(current))
+                    {
+                        builder.Append("\\u");
+                        builder.Append(((int)current).ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        builder.Append(current);
+                    }
+
+                    break;
+            }
+        }
+
+        builder.Append('"');
+        return builder.ToString();
     }
 
     private static string BoolLiteral(bool value)
@@ -696,7 +826,28 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             builder.Append(char.IsLetterOrDigit(current) ? current : '_');
         }
 
-        return builder.ToString();
+        if (builder.Length == 0)
+        {
+            builder.Append('_');
+        }
+
+        return builder.Append('_')
+            .Append(StableHash(value).ToString("X8", System.Globalization.CultureInfo.InvariantCulture))
+            .ToString();
+    }
+
+    private static uint StableHash(string value)
+    {
+        const uint offset = 2166136261;
+        const uint prime = 16777619;
+        var hash = offset;
+        foreach (var current in value)
+        {
+            hash ^= current;
+            hash *= prime;
+        }
+
+        return hash;
     }
 
     private static string EscapeIdentifier(string value)
@@ -836,7 +987,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             int? scale,
             string commentLiteral,
             bool? isUnicode,
-            bool canWrite)
+            bool canWrite,
+            bool isInitOnly)
         {
             PropertyName = propertyName;
             MemberAccessName = EscapeIdentifier(propertyName);
@@ -856,6 +1008,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             CommentLiteral = commentLiteral;
             IsUnicode = isUnicode;
             CanWrite = canWrite;
+            IsInitOnly = isInitOnly;
         }
 
         public string PropertyName { get; }
@@ -893,5 +1046,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public bool? IsUnicode { get; }
 
         public bool CanWrite { get; }
+
+        public bool IsInitOnly { get; }
     }
 }

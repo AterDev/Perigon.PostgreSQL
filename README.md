@@ -99,7 +99,7 @@ var inserted = await db.Users.InsertAsync(new User
 安装工具：
 
 ```powershell
-dotnet tool install --global dotnet-perigon
+dotnet tool install --global Perigon.PostgreSQL.Tools
 ```
 
 最简单的用法：

@@ -397,6 +397,56 @@ public sealed class CrudIntegrationTests
     }
 
     [Fact]
+    public async Task Bulk_insert_values_rolls_back_all_batches_when_a_later_batch_fails()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Bulk-Atomic-Duplicate",
+            Age = 50,
+            IsActive = true,
+            Status = "bulk-atomic-existing",
+            CreatedAt = new DateTime(2026, 1, 18, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["bulk", "atomic"],
+            ProfileJson = """{"source":"existing"}"""
+        });
+
+        var rows = new[]
+        {
+            new IntegrationUser
+            {
+                UserName = "Bulk-Atomic-First",
+                Age = 51,
+                IsActive = true,
+                Status = "bulk-atomic-new",
+                CreatedAt = new DateTime(2026, 1, 19, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["bulk", "atomic"],
+                ProfileJson = """{"source":"first"}"""
+            },
+            new IntegrationUser
+            {
+                UserName = "Bulk-Atomic-Duplicate",
+                Age = 52,
+                IsActive = false,
+                Status = "bulk-atomic-new",
+                CreatedAt = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["bulk", "atomic"],
+                ProfileJson = """{"source":"duplicate"}"""
+            }
+        };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => db.IntegrationUsers.BulkInsertAsync(
+            rows,
+            new Perigon.PostgreSQL.Bulk.BulkInsertOptions
+            {
+                Mode = Perigon.PostgreSQL.Bulk.BulkInsertMode.InsertValues,
+                BatchSize = 1
+            }));
+
+        Assert.False(await db.IntegrationUsers.Where(user => user.UserName == "Bulk-Atomic-First").AnyAsync());
+    }
+
+    [Fact]
     public async Task Upsert_many_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
@@ -432,6 +482,81 @@ public sealed class CrudIntegrationTests
         var user = Assert.Single(after);
         Assert.Equal(32, user.Age);
         Assert.Equal("updated", user.Status);
+    }
+
+    [Fact]
+    public async Task Upsert_many_rolls_back_all_batches_when_a_later_batch_fails()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var rows = new[]
+        {
+            new IntegrationUser
+            {
+                UserName = "Upsert-Atomic-First",
+                Age = 61,
+                IsActive = true,
+                Status = "upsert-atomic",
+                CreatedAt = new DateTime(2026, 1, 25, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["upsert", "atomic"],
+                ProfileJson = """{"batch":1}"""
+            },
+            new IntegrationUser
+            {
+                UserName = null!,
+                Age = 62,
+                IsActive = true,
+                Status = "upsert-invalid",
+                CreatedAt = new DateTime(2026, 1, 26, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["upsert", "invalid"],
+                ProfileJson = """{"batch":2}"""
+            }
+        };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => db.IntegrationUsers.UpsertManyAsync(
+            rows,
+            user => user.UserName,
+            new Perigon.PostgreSQL.Bulk.UpsertOptions<IntegrationUser> { BatchSize = 1 }));
+
+        Assert.False(await db.IntegrationUsers
+            .Where(user => user.UserName == "Upsert-Atomic-First")
+            .AnyAsync());
+    }
+
+    [Fact]
+    public async Task Upsert_many_can_use_an_identity_primary_key_as_conflict_key()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var inserted = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Upsert-Identity",
+            Age = 53,
+            IsActive = true,
+            Status = "identity-before",
+            CreatedAt = new DateTime(2026, 1, 21, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["upsert", "identity"],
+            ProfileJson = """{"version":1}"""
+        });
+
+        var affected = await db.IntegrationUsers.UpsertManyAsync(
+            [
+                new IntegrationUser
+                {
+                    Id = inserted.Id,
+                    UserName = "Upsert-Identity",
+                    Age = 54,
+                    IsActive = false,
+                    Status = "identity-after",
+                    CreatedAt = inserted.CreatedAt,
+                    Tags = ["upsert", "identity", "updated"],
+                    ProfileJson = """{"version":2}"""
+                }
+            ],
+            user => user.Id);
+
+        var updated = Assert.Single(await db.IntegrationUsers.Where(user => user.Id == inserted.Id).ToListAsync());
+        Assert.Equal(1, affected);
+        Assert.Equal(54, updated.Age);
+        Assert.Equal("identity-after", updated.Status);
     }
 
     [Fact]
@@ -598,6 +723,7 @@ public sealed class CrudIntegrationTests
         var allRows = await db.SqlQuery<IntegrationUserBlogRow>(BuildUserBlogReport(null)).ToListAsync();
         var filteredRows = await db.SqlQuery<IntegrationUserBlogRow>(BuildUserBlogReport("Raw-Report-Bob")).ToListAsync();
 
+        Assert.True(EntityMaterializerRegistry.TryGet<IntegrationUserBlogRow>(out _));
         Assert.Contains(allRows, row => row.UserName == "Raw-Report-Alice" && row.BlogName == "Alice Blog");
         Assert.Contains(allRows, row => row.UserName == "Raw-Report-Bob" && row.BlogName == "Bob Blog");
         var filtered = Assert.Single(filteredRows);

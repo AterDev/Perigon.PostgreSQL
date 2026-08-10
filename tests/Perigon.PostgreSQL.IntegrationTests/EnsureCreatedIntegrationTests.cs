@@ -59,15 +59,11 @@ public sealed class EnsureCreatedIntegrationTests
     [Fact]
     public async Task EnsureCreated_creates_tables_and_fluent_foreign_keys_with_constraint_name()
     {
+        var schema = _fixture.CreateIsolatedSchema("fluent_fk");
         await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
         await connection.OpenAsync();
-        await using (var cleanup = connection.CreateCommand())
-        {
-            cleanup.CommandText = "DROP SCHEMA IF EXISTS ensure_created_fluent_fk CASCADE;";
-            await cleanup.ExecuteNonQueryAsync();
-        }
 
-        await using var db = new FluentForeignKeyDbContext(_fixture.ConnectionString);
+        await using var db = new FluentForeignKeyDbContext(_fixture.ConnectionString, schema);
         await db.EnsureCreatedAsync();
 
         var user = await db.Users.InsertAsync(new FluentForeignKeyUser
@@ -99,10 +95,11 @@ public sealed class EnsureCreatedIntegrationTests
             FROM pg_constraint constraint_item
             INNER JOIN pg_class table_item ON table_item.oid = constraint_item.conrelid
             INNER JOIN pg_namespace schema_item ON schema_item.oid = table_item.relnamespace
-            WHERE schema_item.nspname = 'ensure_created_fluent_fk'
+            WHERE schema_item.nspname = @schema
               AND table_item.relname = 'fluent_posts'
               AND constraint_item.conname = 'fk_fluent_posts_author_id'
             """;
+        command.Parameters.AddWithValue("schema", schema);
         var count = (long)(await command.ExecuteScalarAsync() ?? 0L);
         Assert.Equal(1L, count);
     }
@@ -110,15 +107,11 @@ public sealed class EnsureCreatedIntegrationTests
     [Fact]
     public async Task Raw_sql_query_materializes_using_context_level_fluent_column_mapping()
     {
+        var schema = _fixture.CreateIsolatedSchema("raw_sql_fluent");
         await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
         await connection.OpenAsync();
-        await using (var cleanup = connection.CreateCommand())
-        {
-            cleanup.CommandText = "DROP SCHEMA IF EXISTS ensure_created_raw_sql_fluent CASCADE;";
-            await cleanup.ExecuteNonQueryAsync();
-        }
 
-        await using var db = new FluentRawSqlDbContext(_fixture.ConnectionString);
+        await using var db = new FluentRawSqlDbContext(_fixture.ConnectionString, schema);
         await db.EnsureCreatedAsync();
 
         var inserted = await db.Users.InsertAsync(new FluentRawSqlUser
@@ -126,17 +119,26 @@ public sealed class EnsureCreatedIntegrationTests
             Name = "Raw Fluent Alice"
         });
 
+        var rawSql = System.Runtime.CompilerServices.FormattableStringFactory.Create(
+            $"select id, full_name from {QuoteIdentifier(schema)}.raw_sql_users where id = {{0}}",
+            inserted.Id);
         var users = await db
-            .SqlQuery<FluentRawSqlUser>($"""
-                select id, full_name
-                from ensure_created_raw_sql_fluent.raw_sql_users
-                where id = {inserted.Id}
-                """)
+            .SqlQuery<FluentRawSqlUser>(rawSql)
             .ToListAsync();
 
         var user = Assert.Single(users);
         Assert.Equal(inserted.Id, user.Id);
         Assert.Equal("Raw Fluent Alice", user.Name);
+
+        var mappedQueryUser = Assert.Single(await db.Users
+            .Where(item => item.Id == inserted.Id)
+            .ToListAsync());
+        Assert.Equal("Raw Fluent Alice", mappedQueryUser.Name);
+    }
+
+    private static string QuoteIdentifier(string value)
+    {
+        return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 }
 
@@ -171,9 +173,12 @@ public sealed class EnsureCreatedBlog
 
 public sealed class FluentForeignKeyDbContext : DbContext
 {
-    public FluentForeignKeyDbContext(string connectionString)
+    private readonly string _schema;
+
+    public FluentForeignKeyDbContext(string connectionString, string schema)
         : base(builder => builder.UsePostgres(connectionString))
     {
+        _schema = schema;
     }
 
     public DbSet<FluentForeignKeyUser> Users => Set<FluentForeignKeyUser>();
@@ -182,10 +187,10 @@ public sealed class FluentForeignKeyDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<FluentForeignKeyUser>(entity => entity.ToTable("fluent_users", "ensure_created_fluent_fk"));
+        modelBuilder.Entity<FluentForeignKeyUser>(entity => entity.ToTable("fluent_users", _schema));
         modelBuilder.Entity<FluentForeignKeyPost>(entity =>
         {
-            entity.ToTable("fluent_posts", "ensure_created_fluent_fk");
+            entity.ToTable("fluent_posts", _schema);
             entity.Property(post => post.AuthorId).HasColumnName("author_id");
             entity.HasOne(post => post.Author)
                 .WithMany(user => user.Posts)
@@ -197,9 +202,12 @@ public sealed class FluentForeignKeyDbContext : DbContext
 
 public sealed class FluentRawSqlDbContext : DbContext
 {
-    public FluentRawSqlDbContext(string connectionString)
+    private readonly string _schema;
+
+    public FluentRawSqlDbContext(string connectionString, string schema)
         : base(builder => builder.UsePostgres(connectionString))
     {
+        _schema = schema;
     }
 
     public DbSet<FluentRawSqlUser> Users => Set<FluentRawSqlUser>();
@@ -208,7 +216,7 @@ public sealed class FluentRawSqlDbContext : DbContext
     {
         modelBuilder.Entity<FluentRawSqlUser>(entity =>
         {
-            entity.ToTable("raw_sql_users", "ensure_created_raw_sql_fluent");
+            entity.ToTable("raw_sql_users", _schema);
             entity.Property(user => user.Name).HasColumnName("full_name");
         });
     }

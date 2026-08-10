@@ -76,7 +76,7 @@ public sealed class PerigonQueryableAnalyzer : DiagnosticAnalyzer
             _ => -1
         };
 
-        if (requiredArgumentCount < 0 || invocation.ArgumentList.Arguments.Count > requiredArgumentCount)
+        if (requiredArgumentCount < 0)
         {
             return;
         }
@@ -86,7 +86,37 @@ public sealed class PerigonQueryableAnalyzer : DiagnosticAnalyzer
             return;
         }
 
+        var optionsArgument = invocation.ArgumentList.Arguments
+            .Select((argument, index) => (argument, index))
+            .FirstOrDefault(item =>
+                item.argument.NameColon?.Name.Identifier.ValueText == "options" ||
+                (item.argument.NameColon is null && item.index == requiredArgumentCount && item.index < invocation.ArgumentList.Arguments.Count));
+        if (optionsArgument.argument is not null && IsExplicitFullTableOptIn(optionsArgument.argument.Expression))
+        {
+            return;
+        }
+
         context.ReportDiagnostic(Diagnostic.Create(FullTableMutationRule, memberAccess.Name.GetLocation(), methodName));
+    }
+
+    private static bool IsExplicitFullTableOptIn(ExpressionSyntax expression)
+    {
+        if (expression is ObjectCreationExpressionSyntax { Initializer: { } initializer })
+        {
+            foreach (var assignment in initializer.Expressions.OfType<AssignmentExpressionSyntax>())
+            {
+                if (assignment.Left is IdentifierNameSyntax { Identifier.ValueText: "AllowFullTableDelete" or "AllowFullTableUpdate" } &&
+                    assignment.Right.IsKind(SyntaxKind.TrueLiteralExpression))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return !expression.IsKind(SyntaxKind.NullLiteralExpression) &&
+               !expression.IsKind(SyntaxKind.DefaultLiteralExpression);
     }
 
     private static void AnalyzeProperty(SymbolAnalysisContext context)

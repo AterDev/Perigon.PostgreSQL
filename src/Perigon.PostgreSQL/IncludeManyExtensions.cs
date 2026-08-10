@@ -112,22 +112,58 @@ public static class IncludeManyExtensions
             sql += " AND " + translator.TranslatePredicate(predicate);
         }
 
-        if (queryModel.Orderings.Count > 0)
+        var orderingsSql = queryModel.Orderings.Count == 0
+            ? null
+            : string.Join(", ", queryModel.Orderings.Select(o =>
+                translator.TranslateMember(o.KeySelector) + (o.Descending ? " DESC" : " ASC")));
+
+        if (queryModel.Take is null && queryModel.Skip is null)
         {
-            var orderings = queryModel.Orderings.Select(o =>
-                translator.TranslateMember(o.KeySelector) + (o.Descending ? " DESC" : " ASC"));
-            sql += " ORDER BY " + string.Join(", ", orderings);
+            if (orderingsSql is not null)
+            {
+                sql += " ORDER BY " + orderingsSql;
+            }
+
+            return CommandExecutor.ExecuteQueryAsync<TChild>(
+                children.Context,
+                children.Model,
+                new BoundSql(sql, parameters.Parameters),
+                cancellationToken);
+        }
+
+        if (queryModel.Orderings.Count == 0)
+        {
+            throw new UnsupportedQueryExpressionException(
+                "IncludeMany Skip/Take requires at least one OrderBy so each parent receives deterministic child pagination.");
+        }
+
+        var rowNumberAlias = "__perigon_include_row";
+        var innerSql = sql.Insert(
+            sql.IndexOf(" FROM ", StringComparison.Ordinal),
+            $", row_number() OVER (PARTITION BY {alias}.{Identifier.Quote(column.ColumnName)} ORDER BY {orderingsSql}) AS {Identifier.Quote(rowNumberAlias)}");
+        var outerAlias = "included";
+        var outerColumns = string.Join(", ", children.Model.Columns.Select(c =>
+            $"{outerAlias}.{Identifier.Quote(c.ColumnName)}"));
+        sql = $"SELECT {outerColumns} FROM ({innerSql}) AS {outerAlias}";
+
+        string? skipParameter = null;
+        if (queryModel.Skip is not null)
+        {
+            skipParameter = parameters.Add(queryModel.Skip.Value);
+            sql += $" WHERE {outerAlias}.{Identifier.Quote(rowNumberAlias)} > {skipParameter}";
         }
 
         if (queryModel.Take is not null)
         {
-            sql += " LIMIT " + parameters.Add(queryModel.Take.Value);
+            var upperBound = queryModel.Skip is null
+                ? parameters.Add(queryModel.Take.Value)
+                : $"{skipParameter} + {parameters.Add(queryModel.Take.Value)}";
+            sql += queryModel.Skip is null
+                ? $" WHERE {outerAlias}.{Identifier.Quote(rowNumberAlias)} <= {upperBound}"
+                : $" AND {outerAlias}.{Identifier.Quote(rowNumberAlias)} <= {upperBound}";
         }
 
-        if (queryModel.Skip is not null)
-        {
-            sql += " OFFSET " + parameters.Add(queryModel.Skip.Value);
-        }
+        sql += $" ORDER BY {outerAlias}.{Identifier.Quote(column.ColumnName)}, {outerAlias}.{Identifier.Quote(rowNumberAlias)}";
 
         return CommandExecutor.ExecuteQueryAsync<TChild>(
             children.Context,

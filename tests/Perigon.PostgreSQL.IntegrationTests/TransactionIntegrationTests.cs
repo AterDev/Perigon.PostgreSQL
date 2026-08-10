@@ -177,4 +177,50 @@ public sealed class TransactionIntegrationTests
         Assert.Equal("tx-atomic-after", kept.Single().Status);
         Assert.Empty(deleted);
     }
+
+    [Fact]
+    public async Task Same_context_concurrent_operation_is_rejected()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var transaction = db.TransactionAsync(async _ =>
+        {
+            entered.SetResult(true);
+            await release.Task;
+        });
+
+        await entered.Task;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.IntegrationUsers.CountAsync());
+
+        release.SetResult(true);
+        await transaction;
+    }
+
+    [Fact]
+    public async Task Transaction_cancellation_preserves_cancellation_and_cleans_up_state()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        using var cancellation = new CancellationTokenSource();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => db.TransactionAsync(async ct =>
+        {
+            _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+            {
+                UserName = "Tx-Cancelled",
+                Age = 55,
+                IsActive = true,
+                Status = "tx-cancelled",
+                CreatedAt = new DateTime(2026, 2, 9, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["tx", "cancelled"],
+                ProfileJson = """{"tx":"cancelled"}"""
+            }, ct);
+
+            cancellation.Cancel();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        }, cancellation.Token));
+
+        Assert.False(await db.IntegrationUsers.Where(user => user.UserName == "Tx-Cancelled").AnyAsync());
+    }
 }

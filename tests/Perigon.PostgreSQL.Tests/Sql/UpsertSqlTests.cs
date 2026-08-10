@@ -48,4 +48,23 @@ public sealed class UpsertSqlTests
 
         Assert.Contains("ON CONFLICT (\"user_name\", \"status\")", sql.CommandText);
     }
+
+    [Fact]
+    public void Upsert_identity_conflict_key_includes_identity_column()
+    {
+        using var db = new TestDbContext();
+        var row = new AttributedUser
+        {
+            Key = 42,
+            Name = "Alice",
+            Roles = ["admin"]
+        };
+
+        var sql = db.AttributedUsers.ToUpsertSql([row], user => user.Key);
+
+        Assert.Contains("\"user_id\"", sql.CommandText);
+        Assert.Contains("OVERRIDING SYSTEM VALUE", sql.CommandText);
+        Assert.Contains("ON CONFLICT (\"user_id\")", sql.CommandText);
+        Assert.Equal(42, sql.Parameters[0].Value);
+    }
 }

@@ -117,6 +117,28 @@ public sealed class GroupBySqlTests
     }
 
     [Fact]
+    public void GroupBy_projection_string_methods_use_exact_translation()
+    {
+        using var db = new TestDbContext();
+
+        var startsWith = db.RichUsers
+            .GroupBy(u => u.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .Where(x => x.Status!.StartsWith("a"))
+            .ToSql();
+        var lower = db.RichUsers
+            .GroupBy(u => u.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .Where(x => x.Status!.ToLower() == "active")
+            .ToSql();
+
+        Assert.Contains("HAVING e.\"status\" LIKE $1 ESCAPE '\\'", startsWith.CommandText);
+        Assert.Equal("a%", startsWith.Parameters[0].Value);
+        Assert.Contains("HAVING (lower(e.\"status\") = $1)", lower.CommandText);
+        Assert.Equal("active", lower.Parameters[0].Value);
+    }
+
+    [Fact]
     public void GroupBy_projection_where_preserves_source_parameters()
     {
         using var db = new TestDbContext();

@@ -139,4 +139,102 @@ public sealed class IncludeManyIntegrationTests
         var row = Assert.Single(graph);
         Assert.Equal(["A Public", "B Public"], row.Blogs.Select(b => b.Name));
     }
+
+    [Fact]
+    public async Task Include_many_applies_take_per_parent()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var first = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Include-Paged-A",
+            Age = 42,
+            IsActive = true,
+            Status = "include-paged",
+            CreatedAt = new DateTime(2026, 3, 9, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["include"],
+            ProfileJson = """{"include":"paged-a"}"""
+        });
+        var second = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Include-Paged-B",
+            Age = 43,
+            IsActive = true,
+            Status = "include-paged",
+            CreatedAt = new DateTime(2026, 3, 10, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["include"],
+            ProfileJson = """{"include":"paged-b"}"""
+        });
+
+        _ = await db.IntegrationBlogs.InsertManyReturningAsync(
+        [
+            new IntegrationBlog { IntegrationUserId = first.Id, Name = "A First", IsPublic = true, CreatedAt = DateTime.UtcNow },
+            new IntegrationBlog { IntegrationUserId = first.Id, Name = "B First", IsPublic = true, CreatedAt = DateTime.UtcNow },
+            new IntegrationBlog { IntegrationUserId = second.Id, Name = "A Second", IsPublic = true, CreatedAt = DateTime.UtcNow },
+            new IntegrationBlog { IntegrationUserId = second.Id, Name = "B Second", IsPublic = true, CreatedAt = DateTime.UtcNow }
+        ]);
+
+        var graph = await db.IntegrationUsers
+            .Where(user => user.Status == "include-paged")
+            .OrderBy(user => user.UserName)
+            .IncludeManyAsync(
+                db.IntegrationBlogs,
+                user => user.Id,
+                blog => blog.IntegrationUserId,
+                blogs => blogs.OrderBy(blog => blog.Name).Take(1),
+                (user, blogs) => new UserWithBlogs(user, blogs));
+
+        Assert.Equal(2, graph.Count);
+        Assert.Equal(["A First"], graph[0].Blogs.Select(blog => blog.Name));
+        Assert.Equal(["A Second"], graph[1].Blogs.Select(blog => blog.Name));
+    }
+
+    [Fact]
+    public async Task Include_many_applies_skip_per_parent()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var first = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Include-Skip-A",
+            Age = 44,
+            IsActive = true,
+            Status = "include-skip",
+            CreatedAt = new DateTime(2026, 3, 11, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["include"],
+            ProfileJson = "{\"include\":\"skip-a\"}"
+        });
+        var second = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Include-Skip-B",
+            Age = 45,
+            IsActive = true,
+            Status = "include-skip",
+            CreatedAt = new DateTime(2026, 3, 12, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["include"],
+            ProfileJson = "{\"include\":\"skip-b\"}"
+        });
+
+        _ = await db.IntegrationBlogs.InsertManyReturningAsync(
+        [
+            new IntegrationBlog { IntegrationUserId = first.Id, Name = "A First", IsPublic = true, CreatedAt = DateTime.UtcNow },
+            new IntegrationBlog { IntegrationUserId = first.Id, Name = "B First", IsPublic = true, CreatedAt = DateTime.UtcNow },
+            new IntegrationBlog { IntegrationUserId = first.Id, Name = "C First", IsPublic = true, CreatedAt = DateTime.UtcNow },
+            new IntegrationBlog { IntegrationUserId = second.Id, Name = "A Second", IsPublic = true, CreatedAt = DateTime.UtcNow },
+            new IntegrationBlog { IntegrationUserId = second.Id, Name = "B Second", IsPublic = true, CreatedAt = DateTime.UtcNow },
+            new IntegrationBlog { IntegrationUserId = second.Id, Name = "C Second", IsPublic = true, CreatedAt = DateTime.UtcNow }
+        ]);
+
+        var graph = await db.IntegrationUsers
+            .Where(user => user.Status == "include-skip")
+            .OrderBy(user => user.UserName)
+            .IncludeManyAsync(
+                db.IntegrationBlogs,
+                user => user.Id,
+                blog => blog.IntegrationUserId,
+                blogs => blogs.OrderBy(blog => blog.Name).Skip(1).Take(1),
+                (user, blogs) => new UserWithBlogs(user, blogs));
+
+        Assert.Equal(2, graph.Count);
+        Assert.Equal(["B First"], graph[0].Blogs.Select(blog => blog.Name));
+        Assert.Equal(["B Second"], graph[1].Blogs.Select(blog => blog.Name));
+    }
 }

@@ -164,30 +164,30 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             return node;
         }
 
-        if (node.Method.Name == nameof(string.Contains) && node.Object is not null && node.Object.Type == typeof(string))
+        if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.Contains), typeof(string)))
         {
             Visit(node.Object);
             var instance = _sql.Pop();
-            var value = ExpressionValueReader.Read(node.Arguments[0]);
-            _sql.Push($"{instance} LIKE {_parameters.Add("%" + value + "%")}");
+            var pattern = StringSqlTranslation.ReadLikePattern(node.Arguments[0], "%", "%");
+            _sql.Push($"{instance} LIKE {_parameters.Add(pattern)} ESCAPE '\\'");
             return node;
         }
 
-        if (node.Method.Name == nameof(string.StartsWith) && node.Object is not null)
+        if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.StartsWith), typeof(string)))
         {
             Visit(node.Object);
             var instance = _sql.Pop();
-            var value = ExpressionValueReader.Read(node.Arguments[0]);
-            _sql.Push($"{instance} LIKE {_parameters.Add(value + "%")}");
+            var pattern = StringSqlTranslation.ReadLikePattern(node.Arguments[0], "", "%");
+            _sql.Push($"{instance} LIKE {_parameters.Add(pattern)} ESCAPE '\\'");
             return node;
         }
 
-        if (node.Method.Name == nameof(string.EndsWith) && node.Object is not null)
+        if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.EndsWith), typeof(string)))
         {
             Visit(node.Object);
             var instance = _sql.Pop();
-            var value = ExpressionValueReader.Read(node.Arguments[0]);
-            _sql.Push($"{instance} LIKE {_parameters.Add("%" + value)}");
+            var pattern = StringSqlTranslation.ReadLikePattern(node.Arguments[0], "%", "");
+            _sql.Push($"{instance} LIKE {_parameters.Add(pattern)} ESCAPE '\\'");
             return node;
         }
 
@@ -228,31 +228,35 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             return node;
         }
 
-        if (node.Method.Name == nameof(string.ToLower) && node.Object is not null)
+        if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.ToLower)))
         {
             Visit(node.Object);
             _sql.Push($"lower({_sql.Pop()})");
             return node;
         }
 
-        if (node.Method.Name == nameof(string.ToUpper) && node.Object is not null)
+        if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.ToUpper)))
         {
             Visit(node.Object);
             _sql.Push($"upper({_sql.Pop()})");
             return node;
         }
 
-        if (node.Method.Name == nameof(Enumerable.Contains))
+        if ((node.Method.DeclaringType == typeof(Enumerable) ||
+             node.Method.DeclaringType == typeof(MemoryExtensions)) &&
+            node.Method.Name == nameof(Enumerable.Contains))
         {
             return VisitContains(node);
         }
 
-        if (node.Method.Name == nameof(Enumerable.Any))
+        if (node.Method.DeclaringType == typeof(Enumerable) &&
+            node.Method.Name == nameof(Enumerable.Any))
         {
             return VisitEnumerableAny(node);
         }
 
-        if (node.Method.Name == nameof(Enumerable.All))
+        if (node.Method.DeclaringType == typeof(Enumerable) &&
+            node.Method.Name == nameof(Enumerable.All))
         {
             return VisitEnumerableAll(node);
         }

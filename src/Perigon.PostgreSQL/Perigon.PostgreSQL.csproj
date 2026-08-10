@@ -8,7 +8,7 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <PackageId>Perigon.PostgreSQL</PackageId>
     <Title>Perigon.PostgreSQL</Title>
-    <Version>0.1.4</Version>
+    <Version>0.1.5</Version>
     <Authors>Niltor</Authors>
     <Company>AterDev</Company>
     <Description>PostgreSQL-only NativeAOT-friendly data access library with deterministic SQL, LINQ
@@ -20,11 +20,15 @@
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageIcon>perigon_logo.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>0.1.4 adds `dotnet perigon database scaffold` with new
-      defaults/output layout, expands reverse-engineering/runtime parity for
-      composite keys, default/generated SQL, richer indexes, and views, and
-      validates the NativeAOT smoke publish path. See RELEASE_NOTES.md for
-      details.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.5 improves correctness and robustness across query
+      translation, bulk writes, transactions, lifecycle management, logging, and
+      NativeAOT materialization. Unsupported LINQ shapes now fail explicitly;
+      LIKE patterns are escaped with an explicit ESCAPE clause; IncludeMany
+      paging is applied per parent; identity-key upserts are validated; bulk
+      timeouts, cancellation, COPY streaming, and multi-batch atomicity are
+      enforced; DbContext concurrency and disposal are guarded; and generated
+      materializers cover public set/init properties and raw SQL DTOs. See
+      RELEASE_NOTES.md for details.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

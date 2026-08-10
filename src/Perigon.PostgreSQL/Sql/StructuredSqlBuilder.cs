@@ -245,23 +245,26 @@ internal static class StructuredSqlBuilder
 
         var outerQuery = QueryModelFactory.Create(outerExpression);
         var innerQuery = QueryModelFactory.Create(innerExpression);
+        EnsureJoinSourceShape(innerQuery, "inner");
         var predicates = new List<string>();
-        if (outerQuery.Predicates.Count > 0)
-        {
-            var translator = new SqlExpressionTranslator(outerModel, parameters, outerAlias);
-            predicates.AddRange(outerQuery.Predicates.Select(translator.TranslatePredicate));
-        }
-
         if (innerQuery.Predicates.Count > 0)
         {
             var translator = new SqlExpressionTranslator(innerModel, parameters, innerAlias);
             predicates.AddRange(innerQuery.Predicates.Select(translator.TranslatePredicate));
         }
 
+        if (outerQuery.Predicates.Count > 0)
+        {
+            var translator = new SqlExpressionTranslator(outerModel, parameters, outerAlias);
+            predicates.AddRange(outerQuery.Predicates.Select(translator.TranslatePredicate));
+        }
+
         if (predicates.Count > 0)
         {
             sql += " WHERE " + string.Join(" AND ", predicates);
         }
+
+        AppendOrderAndLimit(outerModel, outerQuery, parameters, outerAlias, ref sql);
 
         return new BoundSql(sql, parameters.Parameters);
     }
@@ -291,6 +294,8 @@ internal static class StructuredSqlBuilder
         var onLeft = TranslateMember(outerKey.Body, aliases);
         var onRight = TranslateMember(innerKey.Body, aliases);
         var innerQuery = QueryModelFactory.Create(innerExpression);
+        var outerQuery = QueryModelFactory.Create(outerExpression);
+        EnsureJoinSourceShape(innerQuery, "inner");
         var joinConditions = new List<string> { $"{onLeft} = {onRight}" };
         if (innerQuery.Predicates.Count > 0)
         {
@@ -300,20 +305,47 @@ internal static class StructuredSqlBuilder
 
         var sql = $"SELECT {string.Join(", ", selections)} FROM {outerModel.StoreObjectName} AS {outerAlias} LEFT JOIN {innerModel.StoreObjectName} AS {innerAlias} ON {string.Join(" AND ", joinConditions)}";
 
-        var outerQuery = QueryModelFactory.Create(outerExpression);
-        var predicates = new List<string>();
-        if (outerQuery.Predicates.Count > 0)
-        {
-            var translator = new SqlExpressionTranslator(outerModel, parameters, outerAlias);
-            predicates.AddRange(outerQuery.Predicates.Select(translator.TranslatePredicate));
-        }
-
-        if (predicates.Count > 0)
-        {
-            sql += " WHERE " + string.Join(" AND ", predicates);
-        }
+        AppendOuterJoinQuery(outerModel, outerQuery, parameters, outerAlias, ref sql);
 
         return new BoundSql(sql, parameters.Parameters);
+    }
+
+    private static void AppendOuterJoinQuery(
+        EntityModel model,
+        QueryModel queryModel,
+        ParameterBag parameters,
+        string alias,
+        ref string sql)
+    {
+        AppendWhereAndOrder(model, queryModel, parameters, alias, ref sql);
+        AppendLimitOffset(queryModel, parameters, ref sql);
+    }
+
+    private static void AppendOrderAndLimit(
+        EntityModel model,
+        QueryModel queryModel,
+        ParameterBag parameters,
+        string alias,
+        ref string sql)
+    {
+        if (queryModel.Orderings.Count > 0)
+        {
+            var translator = new SqlExpressionTranslator(model, parameters, alias);
+            var orderings = queryModel.Orderings.Select(o =>
+                translator.TranslateMember(o.KeySelector) + (o.Descending ? " DESC" : " ASC"));
+            sql += " ORDER BY " + string.Join(", ", orderings);
+        }
+
+        AppendLimitOffset(queryModel, parameters, ref sql);
+    }
+
+    private static void EnsureJoinSourceShape(QueryModel query, string sourceName)
+    {
+        if (query.Orderings.Count > 0 || query.Skip is not null || query.Take is not null)
+        {
+            throw new UnsupportedQueryExpressionException(
+                $"Join {sourceName} sources do not support OrderBy, ThenBy, Skip, or Take. Apply ordering or paging after the join.");
+        }
     }
 
     private static BoundSql BuildGroupBy(MethodCallExpression groupBy, LambdaExpression selector)
@@ -1028,21 +1060,21 @@ internal static class StructuredSqlBuilder
                 return node;
             }
 
-            if (node.Method.Name == nameof(string.Contains) && node.Object is not null && node.Object.Type == typeof(string))
+            if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.Contains), typeof(string)))
             {
                 Visit(node.Object);
                 var instance = _sql.Pop();
-                var value = ExpressionValueReader.Read(node.Arguments[0]);
-                _sql.Push($"{instance} LIKE {_parameters.Add("%" + value + "%")}");
+                var pattern = StringSqlTranslation.ReadLikePattern(node.Arguments[0], "%", "%");
+                _sql.Push($"{instance} LIKE {_parameters.Add(pattern)} ESCAPE '\\'");
                 return node;
             }
 
-            if (node.Method.Name == nameof(string.StartsWith) && node.Object is not null)
+            if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.StartsWith), typeof(string)))
             {
                 Visit(node.Object);
                 var instance = _sql.Pop();
-                var value = ExpressionValueReader.Read(node.Arguments[0]);
-                _sql.Push($"{instance} LIKE {_parameters.Add(value + "%")}");
+                var pattern = StringSqlTranslation.ReadLikePattern(node.Arguments[0], "", "%");
+                _sql.Push($"{instance} LIKE {_parameters.Add(pattern)} ESCAPE '\\'");
                 return node;
             }
 
@@ -1067,12 +1099,26 @@ internal static class StructuredSqlBuilder
                 return node;
             }
 
-            if (node.Method.Name == nameof(string.EndsWith) && node.Object is not null)
+            if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.EndsWith), typeof(string)))
             {
                 Visit(node.Object);
                 var instance = _sql.Pop();
-                var value = ExpressionValueReader.Read(node.Arguments[0]);
-                _sql.Push($"{instance} LIKE {_parameters.Add("%" + value)}");
+                var pattern = StringSqlTranslation.ReadLikePattern(node.Arguments[0], "%", "");
+                _sql.Push($"{instance} LIKE {_parameters.Add(pattern)} ESCAPE '\\'");
+                return node;
+            }
+
+            if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.ToLower)))
+            {
+                Visit(node.Object);
+                _sql.Push($"lower({_sql.Pop()})");
+                return node;
+            }
+
+            if (StringSqlTranslation.IsExactInstanceMethod(node, nameof(string.ToUpper)))
+            {
+                Visit(node.Object);
+                _sql.Push($"upper({_sql.Pop()})");
                 return node;
             }
 

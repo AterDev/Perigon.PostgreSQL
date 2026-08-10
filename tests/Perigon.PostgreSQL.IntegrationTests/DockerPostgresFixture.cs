@@ -6,6 +6,8 @@ namespace Perigon.PostgreSQL.IntegrationTests;
 public sealed class DockerPostgresFixture : IAsyncLifetime
 {
     private readonly string _containerName = "perigon-postgres-test-" + Guid.NewGuid().ToString("N")[..8];
+    private readonly string _schemaName = "perigon_integration_" + Guid.NewGuid().ToString("N")[..12];
+    private readonly HashSet<string> _ownedSchemas = new(StringComparer.Ordinal);
     private bool _usesExternalConnectionString;
 
     public string ConnectionString { get; private set; } = "";
@@ -18,14 +20,16 @@ public sealed class DockerPostgresFixture : IAsyncLifetime
             _usesExternalConnectionString = true;
             ConnectionString = externalConnectionString;
             await EnsureDatabaseExistsAsync().ConfigureAwait(false);
+            ConnectionString = ApplySchemaSearchPath(ConnectionString);
             await WaitUntilReadyAsync().ConfigureAwait(false);
             await CreateSchemaAsync().ConfigureAwait(false);
             return;
         }
 
+        var image = ReadContainerImage();
         var containerId = await RunAsync(
             "docker",
-            $"run -d --name {_containerName} -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=perigon_test -p 127.0.0.1::5432 postgres:18.1-alpine")
+            $"run -d --name {_containerName} -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=perigon_test -p 127.0.0.1::5432 {image}")
             .ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(containerId))
@@ -46,7 +50,8 @@ public sealed class DockerPostgresFixture : IAsyncLifetime
         }
 
         var port = portOutput.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Last();
-        ConnectionString = $"Host=127.0.0.1;Port={port};Database=perigon_test;Username=postgres;Password=postgres;Timeout=5";
+        ConnectionString = ApplySchemaSearchPath(
+            $"Host=127.0.0.1;Port={port};Database=perigon_test;Username=postgres;Password=postgres;Timeout=5");
         await WaitUntilReadyAsync().ConfigureAwait(false);
         await CreateSchemaAsync().ConfigureAwait(false);
     }
@@ -55,6 +60,7 @@ public sealed class DockerPostgresFixture : IAsyncLifetime
     {
         if (_usesExternalConnectionString)
         {
+            await DropOwnedSchemasAsync().ConfigureAwait(false);
             return;
         }
 
@@ -115,17 +121,20 @@ public sealed class DockerPostgresFixture : IAsyncLifetime
 
     private async Task CreateSchemaAsync()
     {
+        lock (_ownedSchemas)
+        {
+            _ownedSchemas.Add(_schemaName);
+        }
+
         await using var connection = new NpgsqlConnection(ConnectionString);
         await connection.OpenAsync().ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = """
-            DROP TABLE IF EXISTS integration_offset_orders;
-            DROP TABLE IF EXISTS integration_offset_checkpoints;
-            DROP TABLE IF EXISTS integration_orders;
-            DROP TABLE IF EXISTS integration_blogs;
-            DROP TABLE IF EXISTS integration_users;
+        var schema = QuoteIdentifier(_schemaName);
+        command.CommandText = $"""
+            DROP SCHEMA IF EXISTS {schema} CASCADE;
+            CREATE SCHEMA {schema};
 
-            CREATE TABLE integration_users (
+            CREATE TABLE {schema}.integration_users (
                 id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 user_name text NOT NULL,
                 age integer NOT NULL,
@@ -136,17 +145,17 @@ public sealed class DockerPostgresFixture : IAsyncLifetime
                 tags text[] NULL,
                 profile_json jsonb NULL
             );
-            CREATE UNIQUE INDEX integration_users_user_name_uq ON integration_users (user_name);
+            CREATE UNIQUE INDEX integration_users_user_name_uq ON {schema}.integration_users (user_name);
 
-            CREATE TABLE integration_blogs (
+            CREATE TABLE {schema}.integration_blogs (
                 id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                integration_user_id integer NOT NULL REFERENCES integration_users(id) ON DELETE CASCADE,
+                integration_user_id integer NOT NULL REFERENCES {schema}.integration_users(id) ON DELETE CASCADE,
                 name text NOT NULL,
                 is_public boolean NOT NULL,
                 created_at timestamp with time zone NOT NULL
             );
 
-            CREATE TABLE integration_orders (
+            CREATE TABLE {schema}.integration_orders (
                 id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 order_no text NOT NULL,
                 status text NULL,
@@ -154,7 +163,7 @@ public sealed class DockerPostgresFixture : IAsyncLifetime
                 total_price numeric(18, 2) NOT NULL
             );
 
-            CREATE TABLE integration_offset_orders (
+            CREATE TABLE {schema}.integration_offset_orders (
                 id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 order_no text NOT NULL,
                 status text NULL,
@@ -162,7 +171,7 @@ public sealed class DockerPostgresFixture : IAsyncLifetime
                 total_price numeric(18, 2) NOT NULL
             );
 
-            CREATE TABLE integration_offset_checkpoints (
+            CREATE TABLE {schema}.integration_offset_checkpoints (
                 id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 checkpoint_no text NOT NULL,
                 status text NULL,
@@ -170,6 +179,75 @@ public sealed class DockerPostgresFixture : IAsyncLifetime
             );
             """;
         await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
+    public string CreateIsolatedSchema(string purpose)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(purpose);
+        if (purpose.Any(character => !(char.IsLetterOrDigit(character) || character == '_')))
+        {
+            throw new ArgumentException("Schema purpose may contain only letters, digits, and underscores.", nameof(purpose));
+        }
+
+        var schema = $"{_schemaName}_{purpose}";
+        if (schema.Length > 63)
+        {
+            throw new ArgumentException("Schema purpose is too long.", nameof(purpose));
+        }
+
+        lock (_ownedSchemas)
+        {
+            _ownedSchemas.Add(schema);
+        }
+
+        return schema;
+    }
+
+    private async Task DropOwnedSchemasAsync()
+    {
+        string[] schemas;
+        lock (_ownedSchemas)
+        {
+            schemas = _ownedSchemas.ToArray();
+        }
+
+        await using var connection = new NpgsqlConnection(ConnectionString);
+        await connection.OpenAsync().ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = string.Join(
+            Environment.NewLine,
+            schemas.Select(schema => $"DROP SCHEMA IF EXISTS {QuoteIdentifier(schema)} CASCADE;"));
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
+    private string ApplySchemaSearchPath(string connectionString)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            SearchPath = _schemaName
+        };
+        return builder.ConnectionString;
+    }
+
+    private static string QuoteIdentifier(string value)
+    {
+        return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+    }
+
+    private static string ReadContainerImage()
+    {
+        var image = Environment.GetEnvironmentVariable("PERIGON_POSTGRES_IMAGE");
+        if (string.IsNullOrWhiteSpace(image))
+        {
+            return "postgres:18.1-alpine@sha256:aa6eb304ddb6dd26df23d05db4e5cb05af8951cda3e0dc57731b771e0ef4ab29";
+        }
+
+        if (image.Any(character => !(char.IsLetterOrDigit(character) || character is '.' or '/' or ':' or '@' or '_' or '-')))
+        {
+            throw new InvalidOperationException("PERIGON_POSTGRES_IMAGE contains unsupported characters.");
+        }
+
+        return image;
     }
 
     private static async Task<string> RunAsync(string fileName, string arguments)

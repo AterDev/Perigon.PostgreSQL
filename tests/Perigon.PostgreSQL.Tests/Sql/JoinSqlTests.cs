@@ -123,4 +123,42 @@ public sealed class JoinSqlTests
             "SELECT o.\"user_name\" AS \"UserName\", i.\"name\" AS \"BlogName\" FROM \"rich_users\" AS o LEFT JOIN \"blogs\" AS i ON o.\"id\" = i.\"rich_user_id\" AND i.\"is_public\"",
             sql.CommandText);
     }
+
+    [Fact]
+    public void Inner_join_preserves_outer_ordering_after_join()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers
+            .OrderBy(u => u.UserName)
+            .Join(
+                db.Blogs,
+                u => u.Id,
+                b => b.RichUserId,
+                (u, b) => new { u.UserName, b.Name })
+            .ToSql();
+
+        Assert.Contains("ORDER BY o.\"user_name\" ASC", sql.CommandText);
+    }
+
+    [Fact]
+    public void Left_join_rejects_paging_or_ordering_on_join_sources()
+    {
+        using var db = new TestDbContext();
+
+        var error = Assert.Throws<Perigon.PostgreSQL.Expressions.UnsupportedQueryExpressionException>(() =>
+            db.RichUsers
+                .GroupJoin(
+                    db.Blogs.OrderBy(b => b.Name).Take(1),
+                    u => u.Id,
+                    b => b.RichUserId,
+                    (u, blogs) => new { u, blogs })
+                .SelectMany(
+                    x => x.blogs.DefaultIfEmpty(),
+                    (x, b) => new { x.u.UserName, BlogName = b!.Name })
+                .ToSql());
+
+        Assert.Contains("inner", error.Message);
+        Assert.Contains("Take", error.Message);
+    }
 }

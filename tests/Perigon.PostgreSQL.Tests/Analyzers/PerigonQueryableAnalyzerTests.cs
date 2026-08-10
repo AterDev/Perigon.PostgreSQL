@@ -101,6 +101,53 @@ public sealed class PerigonQueryableAnalyzerTests
             diagnostic.Id == PerigonQueryableAnalyzer.DynamicJsonPocoDiagnosticId);
     }
 
+    [Fact]
+    public async Task Explicit_null_or_false_mutation_options_still_report_safety_warning()
+    {
+        var diagnostics = await AnalyzeAsync("""
+            using System.Linq;
+            using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Update;
+
+            public sealed class User { public int Age { get; set; } }
+
+            public sealed class Queries
+            {
+                public void Run(IQueryable<User> users)
+                {
+                    _ = users.ExecuteDeleteAsync(options: null);
+                    _ = users.ExecuteUpdateAsync(s => s.Set(u => u.Age, 1), options: new UpdateOptions { AllowFullTableUpdate = false });
+                }
+            }
+            """);
+
+        Assert.Equal(2, diagnostics.Count(diagnostic =>
+            diagnostic.Id == PerigonQueryableAnalyzer.FullTableMutationDiagnosticId));
+    }
+
+    [Fact]
+    public async Task Cancellation_token_argument_does_not_suppress_mutation_warning()
+    {
+        var diagnostics = await AnalyzeAsync("""
+            using System.Linq;
+            using System.Threading;
+            using Perigon.PostgreSQL;
+
+            public sealed class User { public int Age { get; set; } }
+
+            public sealed class Queries
+            {
+                public void Run(IQueryable<User> users, CancellationToken token)
+                {
+                    _ = users.ExecuteDeleteAsync(cancellationToken: token);
+                }
+            }
+            """);
+
+        Assert.Contains(diagnostics, diagnostic =>
+            diagnostic.Id == PerigonQueryableAnalyzer.FullTableMutationDiagnosticId);
+    }
+
     private static async Task<ImmutableArray<Diagnostic>> AnalyzeAsync(string source)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview));

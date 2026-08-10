@@ -26,25 +26,7 @@ internal static class PerigonTool
                 Console.Error.WriteLine($"Warning: {warning}");
             }
 
-            Directory.CreateDirectory(options.OutputDirectory);
-            foreach (var file in files)
-            {
-                var path = Path.Combine(options.OutputDirectory, file.RelativePath);
-                if (options.DryRun)
-                {
-                    Console.WriteLine(path);
-                    continue;
-                }
-
-                if (File.Exists(path) && !options.Force)
-                {
-                    throw new InvalidOperationException($"File '{path}' already exists. Use --force to overwrite it.");
-                }
-
-                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                await File.WriteAllTextAsync(path, file.Content).ConfigureAwait(false);
-                Console.WriteLine($"Generated {path}");
-            }
+            await WriteGeneratedFilesAsync(files, options).ConfigureAwait(false);
 
             return 0;
         }
@@ -52,6 +34,35 @@ internal static class PerigonTool
         {
             Console.Error.WriteLine(ex.Message);
             return 2;
+        }
+    }
+
+    internal static async Task WriteGeneratedFilesAsync(
+        IReadOnlyList<GeneratedFile> files,
+        ScaffoldOptions options)
+    {
+        if (options.DryRun)
+        {
+            foreach (var file in files)
+            {
+                Console.WriteLine(Path.Combine(options.OutputDirectory, file.RelativePath));
+            }
+
+            return;
+        }
+
+        Directory.CreateDirectory(options.OutputDirectory);
+        foreach (var file in files)
+        {
+            var path = Path.Combine(options.OutputDirectory, file.RelativePath);
+            if (File.Exists(path) && !options.Force)
+            {
+                throw new InvalidOperationException($"File '{path}' already exists. Use --force to overwrite it.");
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, file.Content).ConfigureAwait(false);
+            Console.WriteLine($"Generated {path}");
         }
     }
 

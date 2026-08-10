@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep NuGet vulnerability auditing enabled while avoiding the broken transitive advisory blobs returned by the current v3 feed. -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>direct</NuGetAuditMode>
+  </PropertyGroup>
+</Project>

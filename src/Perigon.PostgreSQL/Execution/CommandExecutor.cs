@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Sql;
@@ -11,57 +14,94 @@ internal static class CommandExecutor
         BoundSql sql,
         CancellationToken cancellationToken)
     {
-        await using var command = context.CreateCommand(sql);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        using var operation = context.EnterOperation();
+        var stopwatch = Stopwatch.StartNew();
+        LogExecuting(context, sql, "NonQuery");
+        try
+        {
+            await using var command = context.CreateCommand(sql);
+            var affectedRows = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            LogCompleted(context, sql, stopwatch, "NonQuery", affectedRows: affectedRows);
+            return affectedRows;
+        }
+        catch (Exception exception)
+        {
+            LogFailed(context, sql, stopwatch, exception);
+            throw;
+        }
     }
 
-    public static async Task<List<T>> ExecuteQueryAsync<T>(
+    public static async Task<List<T>> ExecuteQueryAsync<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         DbContext context,
-        EntityModel model,
+        EntityModel? model,
         BoundSql sql,
         CancellationToken cancellationToken)
         where T : class, new()
     {
-        await using var command = context.CreateCommand(sql);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        var results = new List<T>();
-        if (CanUseGeneratedMaterializer<T>(model) && EntityMaterializerRegistry.TryGet<T>(out var generatedMaterializer))
+        using var operation = context.EnterOperation();
+        var stopwatch = Stopwatch.StartNew();
+        LogExecuting(context, sql, "Query");
+        try
         {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            await using var command = context.CreateCommand(sql);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            var results = new List<T>();
+            if (EntityMaterializerRegistry.TryGet<T>(out var generatedMaterializer) &&
+                (model is null || CanUseGeneratedMaterializer<T>(model)))
             {
-                results.Add(generatedMaterializer(reader));
-            }
-
-            return results;
-        }
-
-        var ordinals = BuildOrdinals(reader, model);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            var entity = new T();
-            foreach (var (column, ordinal) in ordinals)
-            {
-                if (!column.Property.CanWrite || await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false))
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    continue;
+                    results.Add(generatedMaterializer(reader));
                 }
 
-                var value = reader.GetValue(ordinal);
-                column.Property.SetValue(entity, ConvertValue(value, column.Property.PropertyType));
+                LogCompleted(context, sql, stopwatch, "Query", resultCount: results.Count);
+                return results;
             }
 
-            results.Add(entity);
-        }
+            model ??= context.ResolveEntityModel(typeof(T));
+            var ordinals = BuildOrdinals(reader, model);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var entity = new T();
+                foreach (var (column, ordinal) in ordinals)
+                {
+                    if (!column.Property.CanWrite || await reader.IsDBNullAsync(ordinal, cancellationToken).ConfigureAwait(false))
+                    {
+                        continue;
+                    }
 
-        return results;
+                    var value = reader.GetValue(ordinal);
+                    column.Property.SetValue(entity, ConvertValue(value, column.Property.PropertyType));
+                }
+
+                results.Add(entity);
+            }
+
+            LogCompleted(context, sql, stopwatch, "Query", resultCount: results.Count);
+            return results;
+        }
+        catch (Exception exception)
+        {
+            LogFailed(context, sql, stopwatch, exception);
+            throw;
+        }
     }
 
-    private static bool CanUseGeneratedMaterializer<T>(EntityModel model)
+    private static bool CanUseGeneratedMaterializer<T>(EntityModel? model)
         where T : class, new()
     {
-        if (!EntityModelRegistry.TryGet(model.ClrType, out var defaultModel))
+        if (model is null)
         {
             return false;
+        }
+
+        if (!EntityModelRegistry.TryGet(model.ClrType, out var defaultModel))
+        {
+            // DTO projections and Raw SQL result types do not need a DbSet-backed
+            // EntityModel. Their generated materializer is the authoritative
+            // mapping and must remain usable in NativeAOT.
+            return true;
         }
 
         if (model.Columns.Count != defaultModel.Columns.Count)
@@ -137,15 +177,29 @@ internal static class CommandExecutor
         BoundSql sql,
         CancellationToken cancellationToken)
     {
-        await using var command = context.CreateCommand(sql);
-        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        if (value is null || value is DBNull)
+        using var operation = context.EnterOperation();
+        var stopwatch = Stopwatch.StartNew();
+        LogExecuting(context, sql, "Scalar");
+        try
         {
-            return default!;
-        }
+            await using var command = context.CreateCommand(sql);
+            var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (value is null || value is DBNull)
+            {
+                LogCompleted(context, sql, stopwatch, "Scalar", resultCount: 0);
+                return default!;
+            }
 
-        var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
-        return (T)ConvertToTargetType(value, targetType);
+            var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
+            var result = (T)ConvertToTargetType(value, targetType);
+            LogCompleted(context, sql, stopwatch, "Scalar", resultCount: 1);
+            return result;
+        }
+        catch (Exception exception)
+        {
+            LogFailed(context, sql, stopwatch, exception);
+            throw;
+        }
     }
 
     public static async Task<List<T>> ExecuteScalarListAsync<T>(
@@ -153,23 +207,81 @@ internal static class CommandExecutor
         BoundSql sql,
         CancellationToken cancellationToken)
     {
-        await using var command = context.CreateCommand(sql);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        var results = new List<T>();
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        using var operation = context.EnterOperation();
+        var stopwatch = Stopwatch.StartNew();
+        LogExecuting(context, sql, "ScalarList");
+        try
         {
-            if (await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false))
+            await using var command = context.CreateCommand(sql);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            var results = new List<T>();
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                results.Add(default!);
-                continue;
+                if (await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false))
+                {
+                    results.Add(default!);
+                    continue;
+                }
+
+                var value = reader.GetValue(0);
+                var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
+                results.Add((T)ConvertToTargetType(value, targetType));
             }
 
-            var value = reader.GetValue(0);
-            var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
-            results.Add((T)ConvertToTargetType(value, targetType));
+            LogCompleted(context, sql, stopwatch, "ScalarList", resultCount: results.Count);
+            return results;
+        }
+        catch (Exception exception)
+        {
+            LogFailed(context, sql, stopwatch, exception);
+            throw;
+        }
+    }
+
+    private static void LogExecuting(DbContext context, BoundSql sql, string operation)
+    {
+        var logger = context.Logger;
+        if (logger is null || !logger.IsEnabled(LogLevel.Debug))
+        {
+            return;
         }
 
-        return results;
+        logger.LogDebug(
+            "Executing PostgreSQL command {Operation}; CommandText={CommandText}; ParameterCount={ParameterCount}; ParameterTypes={ParameterTypes}; Parameters={Parameters}",
+            operation,
+            sql.CommandText,
+            sql.Parameters.Count,
+            string.Join(", ", sql.Parameters.Select(parameter =>
+                parameter.DbType?.ToString() ?? parameter.Value?.GetType().FullName ?? "null")),
+            context.SensitiveLoggingEnabled
+                ? string.Join(", ", sql.Parameters.Select(parameter => parameter.Value ?? "<null>"))
+                : "<redacted>");
+    }
+
+    private static void LogCompleted(
+        DbContext context,
+        BoundSql sql,
+        Stopwatch stopwatch,
+        string operation,
+        int? resultCount = null,
+        int? affectedRows = null)
+    {
+        context.Logger?.LogDebug(
+            "Completed PostgreSQL command {Operation} in {ElapsedMilliseconds} ms; ResultCount={ResultCount}; AffectedRows={AffectedRows}; CommandText={CommandText}",
+            operation,
+            stopwatch.ElapsedMilliseconds,
+            resultCount,
+            affectedRows,
+            sql.CommandText);
+    }
+
+    private static void LogFailed(DbContext context, BoundSql sql, Stopwatch stopwatch, Exception exception)
+    {
+        context.Logger?.LogError(
+            exception,
+            "PostgreSQL command failed after {ElapsedMilliseconds} ms; CommandText={CommandText}",
+            stopwatch.ElapsedMilliseconds,
+            sql.CommandText);
     }
 
     private static object ConvertToTargetType(object value, Type targetType)

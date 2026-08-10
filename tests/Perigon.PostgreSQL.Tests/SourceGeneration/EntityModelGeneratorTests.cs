@@ -270,6 +270,102 @@ public sealed class EntityModelGeneratorTests
         Assert.DoesNotContain("AbstractProjection", generated);
     }
 
+    [Fact]
+    public void Generator_emits_compilable_materializer_for_init_properties_and_escapes_literals()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Attributes;
+
+            namespace Demo;
+
+            public sealed class DemoDbContext : DbContext
+            {
+                public DemoDbContext() : base(_ => { }) { }
+
+                public DbSet<InitProjection> Projections => Set<InitProjection>();
+            }
+
+            [Table("demo\nusers", Schema = "demo\rschema")]
+            [Comment("line\tcomment")]
+            public sealed class InitProjection
+            {
+                public int Id { get; init; }
+
+                public string Name { get; set; } = "default";
+
+                public DemoStatus? Status { get; init; }
+            }
+
+            public enum DemoStatus { Unknown, Active }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("private static global::Demo.InitProjection Materialize_", generated);
+        Assert.Contains("Id = ReadValue<", generated);
+        Assert.Contains("ConvertValue<T>", generated);
+        Assert.Contains("\"demo\\nusers\"", generated);
+        Assert.Contains("\"demo\\rschema\"", generated);
+        Assert.Contains("\"line\\tcomment\"", generated);
+    }
+
+    [Fact]
+    public void Generator_uses_distinct_materializer_names_for_colliding_sanitized_types()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+
+            namespace Demo.A
+            {
+                public sealed class B
+                {
+                    public int Id { get; set; }
+                }
+            }
+
+            namespace Demo
+            {
+                public sealed class A_B
+                {
+                    public int Id { get; set; }
+                }
+            }
+            """;
+
+        _ = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void Generator_reports_unsupported_positional_records_without_emitting_invalid_materializer_code()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+
+            namespace Demo;
+
+            public sealed class DemoDbContext : DbContext
+            {
+                public DemoDbContext() : base(_ => { }) { }
+
+                public DbSet<ImmutableUser> Users => Set<ImmutableUser>();
+            }
+
+            public sealed record ImmutableUser(int Id, string Name);
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.Contains(diagnostics, diagnostic =>
+            diagnostic.Id == "PGSG001" && diagnostic.Severity == DiagnosticSeverity.Warning);
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain("Materialize_global__Demo_ImmutableUser", generated);
+        Assert.Contains("EntityModelRegistry.Register<global::Demo.ImmutableUser>", generated);
+    }
+
     private static string RunGenerator(string source, out ImmutableArray<Diagnostic> diagnostics)
     {
         var parseOptions = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
@@ -282,9 +378,9 @@ public sealed class EntityModelGeneratorTests
         GeneratorDriver driver = CSharpGeneratorDriver.Create(
             generators: [new EntityModelGenerator().AsSourceGenerator()],
             parseOptions: parseOptions);
-        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out _);
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out var generatorDiagnostics);
 
-        diagnostics = outputCompilation.GetDiagnostics();
+        diagnostics = outputCompilation.GetDiagnostics().AddRange(generatorDiagnostics);
         var runResult = driver.GetRunResult();
         var generatedTree = Assert.Single(runResult.GeneratedTrees);
         return generatedTree.ToString();

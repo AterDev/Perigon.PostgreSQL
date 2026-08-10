@@ -9,6 +9,36 @@ namespace Perigon.PostgreSQL.Tests.Tools;
 public sealed class ScaffoldCodeGeneratorTests
 {
     [Fact]
+    public async Task Dry_run_does_not_create_output_directory()
+    {
+        var outputDirectory = Path.Combine(Path.GetTempPath(), "perigon-dry-run-" + Guid.NewGuid().ToString("N"));
+        var options = new ScaffoldOptions
+        {
+            ConnectionString = "Host=localhost;Database=demo",
+            ContextName = "AppDbContext",
+            Namespace = "Demo.Data",
+            OutputDirectory = outputDirectory,
+            DryRun = true
+        };
+
+        try
+        {
+            await PerigonTool.WriteGeneratedFilesAsync(
+                [new GeneratedFile(Path.Combine("Entity", "User.cs"), "public sealed class User { }")],
+                options);
+
+            Assert.False(Directory.Exists(outputDirectory));
+        }
+        finally
+        {
+            if (Directory.Exists(outputDirectory))
+            {
+                Directory.Delete(outputDirectory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void Generate_outputs_context_entities_foreign_keys_and_views()
     {
         var options = new ScaffoldOptions

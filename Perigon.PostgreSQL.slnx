@@ -2,6 +2,9 @@
   <Folder Name="/samples/">
     <Project Path="samples/Perigon.PostgreSQL.AspNetCoreSample/Perigon.PostgreSQL.AspNetCoreSample.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Perigon.PostgreSQL.Benchmarks/Perigon.PostgreSQL.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Perigon.PostgreSQL.Analyzers/Perigon.PostgreSQL.Analyzers.csproj" />
     <Project Path="src/Perigon.PostgreSQL.SourceGeneration/Perigon.PostgreSQL.SourceGeneration.csproj" />

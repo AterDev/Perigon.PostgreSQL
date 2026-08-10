@@ -23,9 +23,10 @@ public static class RawSqlExtensions
         CancellationToken cancellationToken = default)
         where T : class, new()
     {
+        var model = query.Context.ResolveEntityModel(typeof(T));
         return CommandExecutor.ExecuteQueryAsync<T>(
             query.Context,
-            query.Context.ResolveEntityModel(typeof(T)),
+            model,
             query.ToBoundSql(),
             cancellationToken);
     }

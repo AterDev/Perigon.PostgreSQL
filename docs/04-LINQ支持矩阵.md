@@ -35,7 +35,7 @@
 | API | 状态 | SQL 形态 | 备注 |
 | --- | --- | --- | --- |
 | `ToQuerySql` | 已实现 | 生成查询 SQL | 测试和诊断 API |
-| `ToListAsync` | 已实现基础版 | 执行 SELECT | 当前使用反射 materializer，后续替换为源生成 |
+| `ToListAsync` | 已实现基础版 | 执行 SELECT | 优先使用源生成 materializer；未注册类型回退反射路径 |
 | `FirstOrDefaultAsync` | 已实现基础版 | `LIMIT 1` | 通过 `Take(1)` 实现 |
 | `SingleOrDefaultAsync` | 已实现基础版 | `LIMIT 2` | 客户端检测多行 |
 | `ToCountSql` | 已实现 | `SELECT count(*)` | 测试和诊断 API |
@@ -130,9 +130,9 @@
 | 多列 `Set` | 已实现 | 多列 `SET` |
 | 更新为 null | 已实现 | null 参数 |
 | 表达式更新 `Age = Age + 1` | 已实现基础版 | `SetExpression(..., u => u.Age + 1)` |
-| `BulkInsertAsync` | 已实现基础版 | Binary `COPY FROM STDIN` 或批量 `INSERT ... VALUES` |
-| `InsertManyReturningAsync` | 已实现基础版 | 多值 INSERT RETURNING |
-| `UpsertManyAsync` | 已实现基础版 | ON CONFLICT |
+| `BulkInsertAsync` | 已实现基础版 | Binary `COPY FROM STDIN` 或批量 `INSERT ... VALUES`；COPY 流式写入，InsertValues 多批次默认原子并支持超时 |
+| `InsertManyReturningAsync` | 已实现基础版 | 多值 INSERT RETURNING；多批次默认原子 |
+| `UpsertManyAsync` | 已实现基础版 | ON CONFLICT，支持 identity conflict key |
 | `MergeAsync` | 计划支持 | PostgreSQL 15+ MERGE |
 
 ## 8. Include 和导航
@@ -142,7 +142,7 @@
 | `Include(reference)` | 计划支持 | LEFT JOIN 或 split query |
 | `Include(collection)` | 计划支持 | 默认 split query |
 | `IncludeManyAsync(parentKey, childForeignKey, resultSelector)` | 已实现基础版 | split query，子查询使用 `ANY($1)` |
-| filtered include | 已实现基础版 | `IncludeManyAsync` 子查询支持 `Where/OrderBy/Skip/Take` |
+| filtered include | 已实现基础版 | `IncludeManyAsync` 子查询支持 `Where/OrderBy/Skip/Take`；分页按父级执行且要求稳定排序 |
 | `ThenInclude` | 计划支持 | 多级 split query |
 | `AsSplitQuery` | 计划支持 | 多查询 |
 | `AsSingleQuery` | 计划支持 | LEFT JOIN |
@@ -179,7 +179,7 @@
 
 ## 11. 当前测试数量
 
-截至本文档日期，当前测试数量为 211 个，其中包含 155 个单元/SQL 快照测试和 56 个 Docker PostgreSQL 集成测试，覆盖：
+截至本文档日期，当前测试数量为 242 个，其中包含 179 个单元/SQL/工具测试和 63 个 Docker PostgreSQL 集成测试，另有 NativeAOT publish/run smoke 与 BenchmarkDotNet SQL 生成基线，覆盖：
 
 - 默认映射和特性映射。
 - 标识符引用和命名约定。
@@ -209,6 +209,7 @@
 - Select DTO 投影和标量投影真实 PostgreSQL 执行。
 - IncludeMany split query 父子结构真实 PostgreSQL 执行。
 - IncludeMany 子集合过滤和排序真实 PostgreSQL 执行。
+- IncludeMany 多父级 `Take` 按父级分页真实 PostgreSQL 执行。
 - Inner Join 关联查询 SQL 预览和 DTO 投影真实 PostgreSQL 执行。
 - Join inner source 过滤保留。
 - Left Join 标准 LINQ 形态 SQL 预览，inner source 过滤进入 ON 条件。
@@ -221,5 +222,8 @@
 - materializer 基础数值类型转换。
 - Docker PostgreSQL 下的 insert returning、实体查询、数组查询、JSONB 查询、update、delete。
 - Docker PostgreSQL 下的 CountAsync、AnyAsync、COPY BulkInsert、InsertValues BulkInsert、UpsertMany、原生 SQL 查询和命令执行。
+- Docker PostgreSQL 下的 identity 主键 Upsert 和多批次 Bulk 原子回滚。
 - Docker PostgreSQL 下的事务提交、异常回滚、嵌套事务拒绝、事务内 COPY、InsertManyReturning。
+- Docker PostgreSQL 下的同一 DbContext 并发操作拒绝。
+- Docker PostgreSQL 下的事务取消、回滚后连接复用。
 - unsupported 表达式诊断。

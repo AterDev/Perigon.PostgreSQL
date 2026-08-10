@@ -1,4 +1,5 @@
 using NpgsqlTypes;
+using Perigon.PostgreSQL.Bulk;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Sql;
 
@@ -9,11 +10,34 @@ internal static class BulkCopyExecutor
     public static async Task BulkInsertAsync<T>(
         DbSet<T> set,
         IEnumerable<T> entities,
+        BulkInsertOptions options,
         CancellationToken cancellationToken)
         where T : class
     {
-        var rows = entities as IReadOnlyCollection<T> ?? entities.ToArray();
-        if (rows.Count == 0)
+        ArgumentNullException.ThrowIfNull(entities);
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.BatchSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "BatchSize must be greater than zero.");
+        }
+
+        if (options.Timeout < TimeSpan.Zero && options.Timeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Timeout cannot be negative except Timeout.InfiniteTimeSpan.");
+        }
+
+        if (options.BatchSize != new BulkInsertOptions().BatchSize)
+        {
+            throw new ArgumentException("BatchSize applies only to InsertValues mode; COPY mode streams one PostgreSQL COPY statement.", nameof(options));
+        }
+
+        using var operation = set.Context.EnterOperation();
+        using var timeoutSource = BulkInsertCancellation.CreateSource(cancellationToken, options.Timeout);
+        var operationToken = timeoutSource?.Token ?? cancellationToken;
+        operationToken.ThrowIfCancellationRequested();
+
+        using var enumerator = entities.GetEnumerator();
+        if (!enumerator.MoveNext())
         {
             return;
         }
@@ -24,34 +48,36 @@ internal static class BulkCopyExecutor
 
         var ownsConnection = !set.Context.TryGetTransactionConnection(out var transactionConnection);
         var writer = transactionConnection ?? await set.Context.GetDataSource()
-            .OpenConnectionAsync(cancellationToken)
+            .OpenConnectionAsync(operationToken)
             .ConfigureAwait(false);
 
         try
         {
             await using var importer = await writer
-                .BeginBinaryImportAsync(sql, cancellationToken)
+                .BeginBinaryImportAsync(sql, operationToken)
                 .ConfigureAwait(false);
 
-            foreach (var row in rows)
+            do
             {
-                await importer.StartRowAsync(cancellationToken).ConfigureAwait(false);
+                var row = enumerator.Current;
+                await importer.StartRowAsync(operationToken).ConfigureAwait(false);
                 foreach (var column in columns)
                 {
                     var value = EntityValueAccessorRegistry.GetValue(column, row);
                     var dbType = InferDbType(column);
                     if (dbType is null)
                     {
-                        await importer.WriteAsync(value, cancellationToken).ConfigureAwait(false);
+                        await importer.WriteAsync(value, operationToken).ConfigureAwait(false);
                     }
                     else
                     {
-                        await importer.WriteAsync(value, dbType.Value, cancellationToken).ConfigureAwait(false);
+                        await importer.WriteAsync(value, dbType.Value, operationToken).ConfigureAwait(false);
                     }
                 }
             }
+            while (enumerator.MoveNext());
 
-            await importer.CompleteAsync(cancellationToken).ConfigureAwait(false);
+            await importer.CompleteAsync(operationToken).ConfigureAwait(false);
         }
         finally
         {

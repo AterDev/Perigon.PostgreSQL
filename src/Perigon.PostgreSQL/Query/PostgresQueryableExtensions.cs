@@ -196,7 +196,7 @@ public static class PostgresQueryableExtensions
         options ??= new BulkInsertOptions();
         return options.Mode == BulkInsertMode.InsertValues
             ? BulkInsertValuesAsync(set, entities, options, cancellationToken)
-            : BulkCopyExecutor.BulkInsertAsync(set, entities, cancellationToken);
+            : BulkCopyExecutor.BulkInsertAsync(set, entities, options, cancellationToken);
     }
 
     public static BoundSql ToBulkInsertValuesSql<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
@@ -218,7 +218,7 @@ public static class PostgresQueryableExtensions
         return InsertManySqlBuilder.Build(set.Model, rows, options);
     }
 
-    public static Task<List<T>> InsertManyReturningAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
+    public static async Task<List<T>> InsertManyReturningAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         this DbSet<T> set,
         IEnumerable<T> entities,
         ReturningOptions<T>? options = null,
@@ -228,10 +228,18 @@ public static class PostgresQueryableExtensions
         var rows = entities as IReadOnlyList<T> ?? entities.ToArray();
         if (rows.Count == 0)
         {
-            return Task.FromResult(new List<T>());
+            return [];
         }
 
-        return InsertManyReturningBatchedAsync(set, rows, options ?? new ReturningOptions<T>(), cancellationToken);
+        var effectiveOptions = options ?? new ReturningOptions<T>();
+        if (set.Context.TryGetTransactionConnection(out _))
+        {
+            return await InsertManyReturningBatchedAsync(set, rows, effectiveOptions, cancellationToken).ConfigureAwait(false);
+        }
+
+        return await set.Context.TransactionAsync(
+            ct => InsertManyReturningBatchedAsync(set, rows, effectiveOptions, ct),
+            cancellationToken).ConfigureAwait(false);
     }
 
     public static BoundSql ToUpsertSql<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
@@ -245,7 +253,7 @@ public static class PostgresQueryableExtensions
         return UpsertSqlBuilder.Build(set.Model, rows, conflictKey, options);
     }
 
-    public static Task<int> UpsertManyAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
+    public static async Task<int> UpsertManyAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         this DbSet<T> set,
         IEnumerable<T> entities,
         Expression<Func<T, object>> conflictKey,
@@ -256,10 +264,36 @@ public static class PostgresQueryableExtensions
         var rows = entities as IReadOnlyList<T> ?? entities.ToArray();
         if (rows.Count == 0)
         {
-            return Task.FromResult(0);
+            return 0;
         }
 
-        return CommandExecutor.ExecuteNonQueryAsync(set.Context, set.ToUpsertSql(rows, conflictKey, options), cancellationToken);
+        var effectiveOptions = options ?? new UpsertOptions<T>();
+        if (effectiveOptions.BatchSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "BatchSize must be greater than zero.");
+        }
+
+        async Task<int> ExecuteBatchesAsync(CancellationToken ct)
+        {
+            var affected = 0;
+            for (var offset = 0; offset < rows.Count; offset += effectiveOptions.BatchSize)
+            {
+                var batch = rows.Skip(offset).Take(effectiveOptions.BatchSize).ToArray();
+                affected += await CommandExecutor.ExecuteNonQueryAsync(
+                    set.Context,
+                    set.ToUpsertSql(batch, conflictKey, effectiveOptions),
+                    ct).ConfigureAwait(false);
+            }
+
+            return affected;
+        }
+
+        if (set.Context.TryGetTransactionConnection(out _))
+        {
+            return await ExecuteBatchesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return await set.Context.TransactionAsync(ExecuteBatchesAsync, cancellationToken).ConfigureAwait(false);
     }
 
     private static DbContext GetContext<T>(IQueryable<T> source)
@@ -295,15 +329,36 @@ public static class PostgresQueryableExtensions
             throw new ArgumentOutOfRangeException(nameof(options), "BatchSize must be greater than zero.");
         }
 
+        ArgumentNullException.ThrowIfNull(entities);
+        using var timeoutSource = BulkInsertCancellation.CreateSource(cancellationToken, options.Timeout);
+        var operationToken = timeoutSource?.Token ?? cancellationToken;
         var rows = entities as IReadOnlyList<T> ?? entities.ToArray();
         if (rows.Count == 0)
         {
             return;
         }
 
-        for (var offset = 0; offset < rows.Count; offset += options.BatchSize)
+        if (set.Context.TryGetTransactionConnection(out _))
         {
-            var batch = rows.Skip(offset).Take(options.BatchSize).ToArray();
+            await BulkInsertValuesCoreAsync(set, rows, options.BatchSize, operationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await set.Context.TransactionAsync(
+            ct => BulkInsertValuesCoreAsync(set, rows, options.BatchSize, ct),
+            operationToken).ConfigureAwait(false);
+    }
+
+    private static async Task BulkInsertValuesCoreAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
+        DbSet<T> set,
+        IReadOnlyList<T> rows,
+        int batchSize,
+        CancellationToken cancellationToken)
+        where T : class
+    {
+        for (var offset = 0; offset < rows.Count; offset += batchSize)
+        {
+            var batch = rows.Skip(offset).Take(batchSize).ToArray();
             await CommandExecutor.ExecuteNonQueryAsync(
                 set.Context,
                 set.ToBulkInsertValuesSql(batch),

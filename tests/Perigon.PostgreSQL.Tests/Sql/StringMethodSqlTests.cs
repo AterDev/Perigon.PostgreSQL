@@ -11,7 +11,7 @@ public sealed class StringMethodSqlTests
 
         var sql = db.RichUsers.Where(u => u.UserName.Contains("lic")).ToQuerySql();
 
-        Assert.Contains("e.\"user_name\" LIKE $1", sql.CommandText);
+        Assert.Contains("e.\"user_name\" LIKE $1 ESCAPE '\\'", sql.CommandText);
         Assert.Equal("%lic%", sql.Parameters[0].Value);
     }
 
@@ -22,7 +22,7 @@ public sealed class StringMethodSqlTests
 
         var sql = db.RichUsers.Where(u => u.UserName.StartsWith("Al")).ToQuerySql();
 
-        Assert.Contains("e.\"user_name\" LIKE $1", sql.CommandText);
+        Assert.Contains("e.\"user_name\" LIKE $1 ESCAPE '\\'", sql.CommandText);
         Assert.Equal("Al%", sql.Parameters[0].Value);
     }
 
@@ -33,8 +33,19 @@ public sealed class StringMethodSqlTests
 
         var sql = db.RichUsers.Where(u => u.UserName.EndsWith("ce")).ToQuerySql();
 
-        Assert.Contains("e.\"user_name\" LIKE $1", sql.CommandText);
+        Assert.Contains("e.\"user_name\" LIKE $1 ESCAPE '\\'", sql.CommandText);
         Assert.Equal("%ce", sql.Parameters[0].Value);
+    }
+
+    [Fact]
+    public void Like_patterns_escape_wildcards_and_escape_character()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers.Where(u => u.UserName.Contains(@"a%b_c\d")).ToQuerySql();
+
+        Assert.Contains("e.\"user_name\" LIKE $1 ESCAPE '\\'", sql.CommandText);
+        Assert.Equal(@"%a\%b\_c\\d%", sql.Parameters[0].Value);
     }
 
     [Fact]
@@ -111,8 +122,8 @@ public sealed class StringMethodSqlTests
         var trimEnd = db.RichUsers.Where(u => u.UserName.TrimEnd().EndsWith("e")).ToQuerySql();
 
         Assert.Contains("btrim(e.\"user_name\") = $1", trim.CommandText);
-        Assert.Contains("ltrim(e.\"user_name\") LIKE $1", trimStart.CommandText);
-        Assert.Contains("rtrim(e.\"user_name\") LIKE $1", trimEnd.CommandText);
+        Assert.Contains("ltrim(e.\"user_name\") LIKE $1 ESCAPE '\\'", trimStart.CommandText);
+        Assert.Contains("rtrim(e.\"user_name\") LIKE $1 ESCAPE '\\'", trimEnd.CommandText);
     }
 
     [Fact]

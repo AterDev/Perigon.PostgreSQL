@@ -90,7 +90,7 @@ public sealed class DateStatisticsSqlTests
 
         Assert.Contains("SELECT * FROM (SELECT make_timestamp(extract(year from e.\"order_time\")::int, 1, 1, 0, 0, 0) AS \"Date\"", sql.CommandText);
         Assert.Contains("e.\"status\" AS \"Status\"", sql.CommandText);
-        Assert.Contains("WHERE (g.\"Status\" LIKE $1 AND (g.\"Count\" > $2))", sql.CommandText);
+        Assert.Contains("WHERE (g.\"Status\" LIKE $1 ESCAPE '\\' AND (g.\"Count\" > $2))", sql.CommandText);
         Assert.Contains("ORDER BY g.\"Status\" ASC", sql.CommandText);
         Assert.Equal(["paid%", 1], sql.Parameters.Select(p => p.Value).ToArray());
     }

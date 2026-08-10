@@ -21,13 +21,28 @@ internal static class UpsertSqlBuilder
         }
 
         var parameters = new ParameterBag();
-        var columns = model.Columns.Where(c => c.IsWritable).ToArray();
         var conflictColumns = ReadConflictColumns(model, conflictKey.Body);
+        var conflictColumnModels = conflictColumns
+            .Select(name => model.Columns.First(column => string.Equals(column.ColumnName, name, StringComparison.Ordinal)))
+            .ToArray();
+        foreach (var conflictColumn in conflictColumnModels)
+        {
+            if (!conflictColumn.IsWritable && !conflictColumn.IsIdentity)
+            {
+                throw new UnsupportedQueryExpressionException(
+                    $"Generated column '{conflictColumn.PropertyName}' cannot be used as an upsert conflict key.");
+            }
+        }
+
+        var columns = model.Columns
+            .Where(c => c.IsWritable || conflictColumns.Contains(c.ColumnName, StringComparer.Ordinal))
+            .ToArray();
         var columnSql = string.Join(", ", columns.Select(c => Identifier.Quote(c.ColumnName)));
         var rows = entities.Select(entity =>
             "(" + string.Join(", ", columns.Select(c => parameters.Add(EntityValueAccessorRegistry.GetValue(c, entity), InferDbType(c)))) + ")");
 
-        var sql = $"INSERT INTO {model.StoreObjectName} ({columnSql}) VALUES {string.Join(", ", rows)} ON CONFLICT ({string.Join(", ", conflictColumns.Select(Identifier.Quote))})";
+        var overridingIdentity = conflictColumnModels.Any(static column => column.IsIdentity);
+        var sql = $"INSERT INTO {model.StoreObjectName} ({columnSql}){(overridingIdentity ? " OVERRIDING SYSTEM VALUE" : string.Empty)} VALUES {string.Join(", ", rows)} ON CONFLICT ({string.Join(", ", conflictColumns.Select(Identifier.Quote))})";
         if (options?.DoNothing == true)
         {
             sql += " DO NOTHING";
@@ -63,11 +78,26 @@ internal static class UpsertSqlBuilder
 
         if (expression is NewExpression @new)
         {
-            return @new.Arguments
-                .Select(StripConvert)
-                .OfType<MemberExpression>()
-                .Select(m => model.GetColumn(m.Member.Name).ColumnName)
-                .ToArray();
+            if (@new.Arguments.Count == 0)
+            {
+                throw new UnsupportedQueryExpressionException("Conflict key expression must select at least one mapped property.");
+            }
+
+            var columns = new List<string>(@new.Arguments.Count);
+            foreach (var argument in @new.Arguments)
+            {
+                var selectedMember = StripConvert(argument) as MemberExpression
+                    ?? throw new UnsupportedQueryExpressionException(
+                        $"Conflict key expression '{argument}' must select mapped properties only.");
+                columns.Add(model.GetColumn(selectedMember.Member.Name).ColumnName);
+            }
+
+            if (columns.Distinct(StringComparer.Ordinal).Count() != columns.Count)
+            {
+                throw new UnsupportedQueryExpressionException("Conflict key expression cannot select the same property more than once.");
+            }
+
+            return columns;
         }
 
         throw new UnsupportedQueryExpressionException($"Conflict key expression '{expression}' is not supported.");

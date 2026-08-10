@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.1.5
+
+- Made query translation fail explicitly for unsupported LINQ shapes, added exact string-method overload handling, escaped `LIKE` patterns with an explicit `ESCAPE` clause, and corrected per-parent `IncludeMany` paging and identity-key upsert validation.
+- Hardened bulk writes and transactions with effective timeout/cancellation handling, streaming COPY input, atomic multi-batch operations, deterministic rollback cleanup, single-operation `DbContext` concurrency guards, and disposed-state checks.
+- Added logger-factory integration and safer diagnostics, expanded source-generated materialization for public `set`/`init` properties and raw SQL DTOs, and improved NativeAOT/source-generation coverage.
+- Updated the local packaging script to produce aligned `Perigon.PostgreSQL` and `Perigon.PostgreSQL.Tools` 0.1.5 packages.
+
 ## 0.1.4
 
 - Renamed the reverse-engineering command to `dotnet perigon database scaffold`, added default `--context`, `--namespace`, and `--output` behavior, and standardized scaffold output under `AppDbContext/` plus `Entity/`.

@@ -14,34 +14,45 @@ internal static class QueryModelFactory
 
     private static void Visit(Expression expression, QueryModel model)
     {
-        if (expression is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable))
+        if (expression is not MethodCallExpression call)
         {
-            Visit(call.Arguments[0], model);
+            return;
+        }
 
-            switch (call.Method.Name)
-            {
-                case nameof(Queryable.Where):
-                    model.Predicates.Add(UnquoteLambda(call.Arguments[1]));
-                    return;
-                case nameof(Queryable.OrderBy):
-                    model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), false));
-                    return;
-                case nameof(Queryable.OrderByDescending):
-                    model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), true));
-                    return;
-                case nameof(Queryable.ThenBy):
-                    model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), false));
-                    return;
-                case nameof(Queryable.ThenByDescending):
-                    model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), true));
-                    return;
-                case nameof(Queryable.Skip):
-                    model.Skip = ReadInt(call.Arguments[1]);
-                    return;
-                case nameof(Queryable.Take):
-                    model.Take = ReadInt(call.Arguments[1]);
-                    return;
-            }
+        if (call.Method.DeclaringType != typeof(Queryable))
+        {
+            throw new UnsupportedQueryExpressionException(
+                $"Query method '{call.Method.DeclaringType?.FullName}.{call.Method.Name}' is not supported in SQL translation.");
+        }
+
+        Visit(call.Arguments[0], model);
+
+        switch (call.Method.Name)
+        {
+            case nameof(Queryable.Where):
+                model.Predicates.Add(UnquoteLambda(call.Arguments[1]));
+                return;
+            case nameof(Queryable.OrderBy):
+                model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), false));
+                return;
+            case nameof(Queryable.OrderByDescending):
+                model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), true));
+                return;
+            case nameof(Queryable.ThenBy):
+                model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), false));
+                return;
+            case nameof(Queryable.ThenByDescending):
+                model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), true));
+                return;
+            case nameof(Queryable.Skip):
+                model.Skip = ReadInt(call.Arguments[1]);
+                return;
+            case nameof(Queryable.Take):
+                model.Take = ReadInt(call.Arguments[1]);
+                return;
+            default:
+                throw new UnsupportedQueryExpressionException(
+                    $"Queryable operator '{call.Method.Name}' is not supported in SQL translation.");
         }
     }
 

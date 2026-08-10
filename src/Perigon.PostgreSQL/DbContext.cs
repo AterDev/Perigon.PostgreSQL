@@ -1,5 +1,6 @@
 using Npgsql;
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.Logging;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Options;
 using Perigon.PostgreSQL.RawSql;
@@ -11,9 +12,13 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
 {
     private readonly Dictionary<Type, object> _sets = [];
     private readonly DbContextOptions _options;
+    private readonly object _dataSourceSync = new();
+    private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly AsyncLocal<OperationState?> _ambientOperation = new();
     private NpgsqlDataSource? _ownedDataSource;
     private NpgsqlConnection? _transactionConnection;
     private NpgsqlTransaction? _transaction;
+    private int _disposed;
 
     protected DbContext()
     {
@@ -25,6 +30,7 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
     protected DbContext(Action<DbContextOptionsBuilder> configure)
     {
         var builder = new DbContextOptionsBuilder();
+        ArgumentNullException.ThrowIfNull(configure);
         configure(builder);
         OnConfiguring(builder);
         _options = builder.Build();
@@ -47,6 +53,7 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
     protected DbSet<T> Set<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>()
         where T : class
     {
+        ThrowIfDisposed();
         if (_sets.TryGetValue(typeof(T), out var existing))
         {
             return (DbSet<T>)existing;
@@ -60,14 +67,10 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
 
     public NpgsqlDataSource GetDataSource()
     {
+        ThrowIfDisposed();
         if (_options.DataSource is not null)
         {
             return _options.DataSource;
-        }
-
-        if (_ownedDataSource is not null)
-        {
-            return _ownedDataSource;
         }
 
         if (string.IsNullOrWhiteSpace(_options.ConnectionString))
@@ -75,22 +78,33 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
             throw new InvalidOperationException("PostgreSQL connection string or NpgsqlDataSource was not configured.");
         }
 
-        _ownedDataSource = NpgsqlDataSource.Create(BuildEffectiveConnectionString());
-        return _ownedDataSource;
+        lock (_dataSourceSync)
+        {
+            ThrowIfDisposed();
+            if (_ownedDataSource is null)
+            {
+                _ownedDataSource = NpgsqlDataSource.Create(BuildEffectiveConnectionString());
+            }
+
+            return _ownedDataSource;
+        }
     }
 
     public RawSqlQuery<T> SqlQuery<T>(FormattableString sql) where T : class
     {
+        ThrowIfDisposed();
         return new RawSqlQuery<T>(this, sql);
     }
 
     public RawSqlCommand SqlCommand(FormattableString sql)
     {
+        ThrowIfDisposed();
         return new RawSqlCommand(this, sql);
     }
 
     public async Task EnsureCreatedAsync(CancellationToken cancellationToken = default)
     {
+        using var operation = EnterOperation();
         var models = GetEntityModels();
         if (models.Count == 0)
         {
@@ -169,7 +183,15 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         }
         catch
         {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Preserve the original DDL/cancellation exception.
+            }
+
             throw;
         }
     }
@@ -196,6 +218,7 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         Func<CancellationToken, Task> action,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(action);
         _ = await TransactionAsync(async ct =>
         {
             await action(ct).ConfigureAwait(false);
@@ -207,6 +230,8 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         Func<CancellationToken, Task<TResult>> action,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(action);
+        using var operation = EnterTransactionOperation();
         if (_transaction is not null)
         {
             throw new InvalidOperationException("Nested transactions are not supported.");
@@ -225,7 +250,15 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         }
         catch
         {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Preserve the original action/commit/cancellation exception.
+            }
+
             throw;
         }
         finally
@@ -237,6 +270,7 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
 
     internal NpgsqlCommand CreateCommand(Sql.BoundSql sql)
     {
+        ThrowIfDisposed();
         var command = _transactionConnection?.CreateCommand() ?? GetDataSource().CreateCommand();
         command.CommandText = sql.CommandText;
         if (_options.CommandTimeout is not null)
@@ -335,19 +369,30 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
 
     internal bool TryGetTransactionConnection([NotNullWhen(true)] out NpgsqlConnection? connection)
     {
+        ThrowIfDisposed();
         connection = _transactionConnection;
         return connection is not null;
     }
 
+    internal ILogger? Logger => _options.LoggerFactory?.CreateLogger("Perigon.PostgreSQL");
+
+    internal bool SensitiveLoggingEnabled => _options.SensitiveLoggingEnabled;
+
     internal EntityModel ResolveEntityModel(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
     {
+        ThrowIfDisposed();
         return GetEntityModels().FirstOrDefault(item => item.ClrType == entityType)
             ?? EntityModel.For(entityType);
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         if (_transaction is not null)
         {
             await _transaction.DisposeAsync().ConfigureAwait(false);
@@ -358,16 +403,141 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
             await _transactionConnection.DisposeAsync().ConfigureAwait(false);
         }
 
-        if (_ownedDataSource is not null)
+        NpgsqlDataSource? ownedDataSource;
+        lock (_dataSourceSync)
         {
-            await _ownedDataSource.DisposeAsync().ConfigureAwait(false);
+            ownedDataSource = _ownedDataSource;
+            _ownedDataSource = null;
         }
+
+        if (ownedDataSource is not null)
+        {
+            await ownedDataSource.DisposeAsync().ConfigureAwait(false);
+        }
+
+        _operationGate.Dispose();
     }
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _transaction?.Dispose();
         _transactionConnection?.Dispose();
-        _ownedDataSource?.Dispose();
+        NpgsqlDataSource? ownedDataSource;
+        lock (_dataSourceSync)
+        {
+            ownedDataSource = _ownedDataSource;
+            _ownedDataSource = null;
+        }
+
+        ownedDataSource?.Dispose();
+        _operationGate.Dispose();
+    }
+
+    internal IDisposable EnterOperation()
+    {
+        ThrowIfDisposed();
+        var ambient = _ambientOperation.Value;
+        if (ambient is not null && ReferenceEquals(ambient.Context, this))
+        {
+            if (!ambient.IsTransaction)
+            {
+                throw new InvalidOperationException(
+                    "Concurrent operations on the same DbContext are not supported. Use a separate DbContext instance for parallel work.");
+            }
+
+            if (Interlocked.CompareExchange(ref ambient.ActiveCommand, 1, 0) != 0)
+            {
+                throw new InvalidOperationException(
+                    "Concurrent operations inside the same transaction are not supported. Await each operation before starting the next one.");
+            }
+
+            return new OperationLease(this, ambient, reentrant: true);
+        }
+
+        if (!_operationGate.Wait(0))
+        {
+            throw new InvalidOperationException(
+                "Concurrent operations on the same DbContext are not supported. Use a separate DbContext instance for parallel work.");
+        }
+
+        var state = new OperationState(this, isTransaction: false);
+        _ambientOperation.Value = state;
+        return new OperationLease(this, state, reentrant: false);
+    }
+
+    private IDisposable EnterTransactionOperation()
+    {
+        ThrowIfDisposed();
+        if (_ambientOperation.Value is not null)
+        {
+            throw new InvalidOperationException("Nested transactions are not supported.");
+        }
+
+        if (!_operationGate.Wait(0))
+        {
+            throw new InvalidOperationException(
+                "Concurrent operations on the same DbContext are not supported. Use a separate DbContext instance for parallel work.");
+        }
+
+        var state = new OperationState(this, isTransaction: true);
+        _ambientOperation.Value = state;
+        return new OperationLease(this, state, reentrant: false);
+    }
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(_disposed != 0, this);
+    }
+
+    private sealed class OperationState
+    {
+        public OperationState(DbContext context, bool isTransaction)
+        {
+            Context = context;
+            IsTransaction = isTransaction;
+        }
+
+        public DbContext Context { get; }
+
+        public bool IsTransaction { get; }
+
+        public int ActiveCommand;
+    }
+
+    private sealed class OperationLease : IDisposable
+    {
+        private readonly DbContext _context;
+        private readonly OperationState _state;
+        private readonly bool _reentrant;
+        private int _disposed;
+
+        public OperationLease(DbContext context, OperationState state, bool reentrant)
+        {
+            _context = context;
+            _state = state;
+            _reentrant = reentrant;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            if (_reentrant)
+            {
+                Volatile.Write(ref _state.ActiveCommand, 0);
+                return;
+            }
+
+            _context._ambientOperation.Value = null;
+            _context._operationGate.Release();
+        }
     }
 }

@@ -1,4 +1,5 @@
 using Npgsql;
+using Microsoft.Extensions.Logging.Abstractions;
 using Perigon.PostgreSQL.Options;
 using Perigon.PostgreSQL.Sql;
 using Perigon.PostgreSQL.Tests.Models;
@@ -25,6 +26,30 @@ public sealed class DbContextOptionsBuilderTests
         Assert.True(options.PoolingEnabled);
         Assert.Equal(3, options.MinPoolSize);
         Assert.Equal(25, options.MaxPoolSize);
+    }
+
+    [Fact]
+    public void Builder_stores_logger_factory()
+    {
+        var loggerFactory = NullLoggerFactory.Instance;
+
+        var options = new DbContextOptionsBuilder()
+            .UseLoggerFactory(loggerFactory)
+            .Build();
+
+        Assert.Same(loggerFactory, options.LoggerFactory);
+    }
+
+    [Fact]
+    public void Disposed_context_rejects_new_data_source_access()
+    {
+        var db = new TunedOptionsDbContext(new DbContextOptionsBuilder()
+            .UseNpgsql("Host=localhost;Port=5432;Database=perigon_tests;Username=postgres;Password=postgres")
+            .Build());
+
+        db.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() => db.GetDataSource());
     }
 
     [Fact]

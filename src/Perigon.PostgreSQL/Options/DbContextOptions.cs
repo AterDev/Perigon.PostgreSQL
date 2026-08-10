@@ -1,4 +1,5 @@
 using Npgsql;
+using Microsoft.Extensions.Logging;
 
 namespace Perigon.PostgreSQL.Options;
 
@@ -9,6 +10,8 @@ public class DbContextOptions
     public NpgsqlDataSource? DataSource { get; internal set; }
 
     public bool SensitiveLoggingEnabled { get; internal set; }
+
+    public ILoggerFactory? LoggerFactory { get; internal set; }
 
     public TimeSpan? CommandTimeout { get; internal set; }
 
