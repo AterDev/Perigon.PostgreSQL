@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="10.0.0" />
+    <ProjectReference Include="..\Perigon.PostgreSQL\Perigon.PostgreSQL.csproj" />
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
     <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
     <None Include="..\..\RELEASE_NOTES.md" Pack="true" PackagePath="\" />

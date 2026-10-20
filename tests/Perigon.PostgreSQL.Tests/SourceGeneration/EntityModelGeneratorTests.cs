@@ -8,6 +8,49 @@ namespace Perigon.PostgreSQL.Tests.SourceGeneration;
 public sealed class EntityModelGeneratorTests
 {
     [Fact]
+    public void Generator_registers_migrations_without_dbsets_in_stable_id_order()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Migrations;
+
+            namespace Demo
+            {
+                public sealed class DemoDbContext : DbContext
+                {
+                    public DemoDbContext() { }
+                }
+
+                [Migration(typeof(DemoDbContext), "202610190102_AddSecond")]
+                public sealed class AddSecondMigration : Migration
+                {
+                    public override void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("SELECT 1");
+                    public override void Down(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("SELECT 1");
+                }
+
+                [Migration(typeof(DemoDbContext), "202610190101_AddFirst")]
+                public sealed class AddFirstMigration : Migration
+                {
+                    public override void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("SELECT 1");
+                    public override void Down(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("SELECT 1");
+                }
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("MigrationRegistry.RegisterContext<global::Demo.DemoDbContext>", generated);
+        Assert.Contains("new global::Perigon.PostgreSQL.Migrations.RegisteredMigration(\"202610190101_AddFirst\", new global::Demo.AddFirstMigration())", generated);
+        Assert.Contains("new global::Perigon.PostgreSQL.Migrations.RegisteredMigration(\"202610190102_AddSecond\", new global::Demo.AddSecondMigration())", generated);
+        Assert.DoesNotContain("EntityModelRegistry.RegisterContext<global::Demo.DemoDbContext>", generated);
+
+        var first = generated.IndexOf("202610190101_AddFirst", StringComparison.Ordinal);
+        var second = generated.IndexOf("202610190102_AddSecond", StringComparison.Ordinal);
+        Assert.True(first >= 0 && second > first);
+    }
+
+    [Fact]
     public void Generator_registers_dbset_entities_with_table_and_column_metadata()
     {
         const string source = """

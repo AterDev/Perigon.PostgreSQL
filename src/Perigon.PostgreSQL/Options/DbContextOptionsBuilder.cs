@@ -94,6 +94,23 @@ public sealed class DbContextOptionsBuilder
         return this;
     }
 
+    public DbContextOptionsBuilder UseMigrationsHistoryTable(string tableName, string schema = "public")
+    {
+        if (string.IsNullOrWhiteSpace(tableName))
+        {
+            throw new ArgumentException("Migration history table name cannot be empty.", nameof(tableName));
+        }
+
+        if (string.IsNullOrWhiteSpace(schema))
+        {
+            throw new ArgumentException("Migration history schema cannot be empty.", nameof(schema));
+        }
+
+        _options.MigrationHistoryTableName = tableName;
+        _options.MigrationHistorySchema = schema;
+        return this;
+    }
+
     internal DbContextOptions Build()
     {
         return _options;
@@ -112,7 +129,9 @@ public sealed class DbContextOptionsBuilder
             ConnectionTimeout = _options.ConnectionTimeout,
             PoolingEnabled = _options.PoolingEnabled,
             MinPoolSize = _options.MinPoolSize,
-            MaxPoolSize = _options.MaxPoolSize
+            MaxPoolSize = _options.MaxPoolSize,
+            MigrationHistoryTableName = _options.MigrationHistoryTableName,
+            MigrationHistorySchema = _options.MigrationHistorySchema
         };
     }
 }

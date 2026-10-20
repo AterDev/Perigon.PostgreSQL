@@ -22,6 +22,10 @@ public class DbContextOptions
     public int? MinPoolSize { get; internal set; }
 
     public int? MaxPoolSize { get; internal set; }
+
+    public string MigrationHistoryTableName { get; internal set; } = "_PerigonMigrationsHistory";
+
+    public string MigrationHistorySchema { get; internal set; } = "public";
 }
 
 public sealed class DbContextOptions<TContext> : DbContextOptions

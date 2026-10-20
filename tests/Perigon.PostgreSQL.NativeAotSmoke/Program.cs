@@ -2,6 +2,7 @@ using Perigon.PostgreSQL;
 using Perigon.PostgreSQL.Bulk;
 using Perigon.PostgreSQL.Execution;
 using Perigon.PostgreSQL.Metadata;
+using Perigon.PostgreSQL.Migrations;
 using Perigon.PostgreSQL.NativeAotSmoke;
 using Perigon.PostgreSQL.RawSql;
 
@@ -18,6 +19,12 @@ if (!EntityMaterializerRegistry.TryGet<SmokeUser>(out _))
 if (!EntityValueAccessorRegistry.TryGetAccessor(typeof(SmokeUser), nameof(SmokeUser.UserName), out _))
 {
     throw new InvalidOperationException("NativeAOT smoke test expected generated entity value accessors.");
+}
+
+var registeredMigrations = MigrationRegistry.GetContextMigrations<SmokeDbContext>();
+if (registeredMigrations.Count != 1 || registeredMigrations[0].Id != "0001_aot_registry")
+{
+    throw new InvalidOperationException("NativeAOT smoke test expected source-generated static migration registration.");
 }
 
 if (!EntityMaterializerRegistry.TryGet<SmokeProjection>(out _))

@@ -2,6 +2,7 @@ using Npgsql;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 using Perigon.PostgreSQL.Metadata;
+using Perigon.PostgreSQL.Migrations;
 using Perigon.PostgreSQL.Options;
 using Perigon.PostgreSQL.RawSql;
 using Perigon.PostgreSQL.Sql;
@@ -201,6 +202,85 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         EnsureCreatedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>Returns the final schema model after source-generated metadata and OnModelCreating have been applied.</summary>
+    public MigrationModel GetMigrationModel()
+    {
+        ThrowIfDisposed();
+        return MigrationModel.FromEntityModels(GetEntityModels());
+    }
+
+    public Task MigrateAsync(CancellationToken cancellationToken = default)
+    {
+        return MigrateAsync(targetMigrationId: null, cancellationToken);
+    }
+
+    /// <summary>Applies or rolls back migrations until the database reaches the requested migration ID. Use "0" to roll back all migrations.</summary>
+    public async Task MigrateAsync(string? targetMigrationId, CancellationToken cancellationToken = default)
+    {
+        await MigrateAsyncCore(targetMigrationId, dataSource: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Applies or rolls back migrations using the supplied data source instead of the context's configured connection.</summary>
+    public async Task MigrateWithDataSourceAsync(
+        NpgsqlDataSource dataSource,
+        string? targetMigrationId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(dataSource);
+        await MigrateAsyncCore(targetMigrationId, dataSource, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task MigrateAsyncCore(
+        string? targetMigrationId,
+        NpgsqlDataSource? dataSource,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        if (_transaction is not null)
+        {
+            throw new InvalidOperationException("Migrations cannot run inside a DbContext transaction.");
+        }
+
+        using var operation = EnterOperation();
+        await MigrationRunner.MigrateAsync(this, targetMigrationId, dataSource, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Marks the specified migration as applied after verifying that the managed PostgreSQL schema matches the supplied snapshot.</summary>
+    public async Task BaselineAsync(
+        string migrationId,
+        MigrationModel expectedModel,
+        CancellationToken cancellationToken = default)
+    {
+        await BaselineAsyncCore(migrationId, expectedModel, dataSource: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Baselines a database using the supplied data source instead of the context's configured connection.</summary>
+    public async Task BaselineWithDataSourceAsync(
+        string migrationId,
+        MigrationModel expectedModel,
+        NpgsqlDataSource dataSource,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(dataSource);
+        await BaselineAsyncCore(migrationId, expectedModel, dataSource, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task BaselineAsyncCore(
+        string migrationId,
+        MigrationModel expectedModel,
+        NpgsqlDataSource? dataSource,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        if (_transaction is not null)
+        {
+            throw new InvalidOperationException("A migration baseline cannot run inside a DbContext transaction.");
+        }
+
+        using var operation = EnterOperation();
+        await MigrationRunner.BaselineAsync(this, migrationId, expectedModel, dataSource, cancellationToken).ConfigureAwait(false);
+    }
+
     protected virtual IReadOnlyList<EntityModel> GetEntityModels()
     {
         var models = EntityModelRegistry.GetContextModels(GetType());
@@ -213,6 +293,10 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         OnModelCreating(builder);
         return builder.Apply(models);
     }
+
+    internal string MigrationHistorySchema => _options.MigrationHistorySchema;
+
+    internal string MigrationHistoryTable => Identifier.Qualify(_options.MigrationHistorySchema, _options.MigrationHistoryTableName);
 
     public async Task TransactionAsync(
         Func<CancellationToken, Task> action,

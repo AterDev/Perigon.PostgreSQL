@@ -21,6 +21,14 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
+    private static readonly DiagnosticDescriptor InvalidMigration = new(
+        id: "PGSG002",
+        title: "Migration cannot be registered",
+        messageFormat: "Migration type '{0}' must have a public parameterless constructor and a valid MigrationAttribute(typeof(DbContext), id)",
+        category: "Perigon.PostgreSQL.SourceGeneration",
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var dbSetEntities = context.SyntaxProvider
@@ -35,11 +43,18 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 static (syntaxContext, _) => TryReadMaterializerType(syntaxContext))
             .Where(static type => type is not null);
 
+        var migrationTypes = context.SyntaxProvider
+            .CreateSyntaxProvider(
+                static (node, _) => node is ClassDeclarationSyntax,
+                static (syntaxContext, _) => TryReadMigrationType(syntaxContext))
+            .Where(static type => type is not null);
+
         context.RegisterSourceOutput(
-            dbSetEntities.Collect().Combine(materializerTypes.Collect()),
+            dbSetEntities.Collect().Combine(materializerTypes.Collect()).Combine(migrationTypes.Collect()),
             static (productionContext, input) => Execute(
                 productionContext,
-                input.Left,
+                input.Left.Left,
+                input.Left.Right,
                 input.Right));
     }
 
@@ -69,7 +84,21 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             !IsAccessibleFromGeneratedCode(type) ||
             IsNotMapped(type) ||
             InheritsFrom(type, "Perigon.PostgreSQL.DbContext") ||
+            InheritsFrom(type, "Perigon.PostgreSQL.Migrations.Migration") ||
             !HasPublicParameterlessConstructor(type))
+        {
+            return null;
+        }
+
+        return type;
+    }
+
+    private static INamedTypeSymbol? TryReadMigrationType(GeneratorSyntaxContext context)
+    {
+        if (context.SemanticModel.GetDeclaredSymbol(context.Node) is not INamedTypeSymbol type ||
+            type.IsAbstract ||
+            !IsAccessibleFromGeneratedCode(type) ||
+            !InheritsFrom(type, "Perigon.PostgreSQL.Migrations.Migration"))
         {
             return null;
         }
@@ -80,7 +109,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
     private static void Execute(
         SourceProductionContext context,
         ImmutableArray<DbSetInfo?> dbSets,
-        ImmutableArray<INamedTypeSymbol?> materializerTypes)
+        ImmutableArray<INamedTypeSymbol?> materializerTypes,
+        ImmutableArray<INamedTypeSymbol?> migrationTypes)
     {
         var distinct = new Dictionary<string, EntityInfo>(StringComparer.Ordinal);
         var contexts = new Dictionary<string, ContextInfo>(StringComparer.Ordinal);
@@ -137,7 +167,35 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             materializers[info.FullName] = info;
         }
 
-        if (distinct.Count == 0 && materializers.Count == 0)
+        foreach (var type in migrationTypes
+                     .Where(static type => type is not null)
+                     .GroupBy(static type => type!.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), StringComparer.Ordinal)
+                     .Select(static group => group.First()))
+        {
+            if (type is null)
+            {
+                continue;
+            }
+
+            if (!TryReadMigration(type, out var migration))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    InvalidMigration,
+                    type.Locations.FirstOrDefault(),
+                    type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
+                continue;
+            }
+
+            if (!contexts.TryGetValue(migration.ContextFullName, out var contextInfo))
+            {
+                contextInfo = new ContextInfo(migration.ContextFullName, SanitizeIdentifier(migration.ContextFullName));
+                contexts[migration.ContextFullName] = contextInfo;
+            }
+
+            contextInfo.AddMigration(migration);
+        }
+
+        if (distinct.Count == 0 && materializers.Count == 0 && contexts.Count == 0)
         {
             return;
         }
@@ -147,6 +205,33 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             contexts.Values.OrderBy(context => context.FullName, StringComparer.Ordinal),
             materializers.Values.OrderBy(type => type.FullName, StringComparer.Ordinal));
         context.AddSource("PerigonEntityModelRegistration.g.cs", SourceText.From(source, Encoding.UTF8));
+    }
+
+    private static bool TryReadMigration(INamedTypeSymbol type, out MigrationInfo migration)
+    {
+        migration = null!;
+        if (type.Arity != 0 || !HasPublicParameterlessConstructor(type))
+        {
+            return false;
+        }
+
+        var attribute = FindAttribute(type.GetAttributes(), "Perigon.PostgreSQL.Migrations.MigrationAttribute");
+        if (attribute is null || attribute.ConstructorArguments.Length < 2 ||
+            attribute.ConstructorArguments[0].Value is not INamedTypeSymbol contextType ||
+            attribute.ConstructorArguments[1].Value is not string id ||
+            string.IsNullOrWhiteSpace(id) ||
+            contextType.Arity != 0 ||
+            !InheritsFrom(contextType, "Perigon.PostgreSQL.DbContext") ||
+            !IsAccessibleFromGeneratedCode(contextType))
+        {
+            return false;
+        }
+
+        migration = new MigrationInfo(
+            type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            contextType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            id);
+        return true;
     }
 
     private static EntityInfo ReadEntity(INamedTypeSymbol entity)
@@ -363,15 +448,33 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         foreach (var context in contextList)
         {
-            builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityModelRegistry.RegisterContext<{context.FullName}>(");
-            builder.AppendLine("                new global::Perigon.PostgreSQL.Metadata.EntityModel[]");
-            builder.AppendLine("                {");
-            foreach (var entityFullName in context.EntityFullNames.OrderBy(static name => name, StringComparer.Ordinal))
+            if (context.EntityFullNames.Count > 0)
             {
-                builder.AppendLine($"                    global::Perigon.PostgreSQL.Metadata.EntityModel.For<{entityFullName}>(),");
+                builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityModelRegistry.RegisterContext<{context.FullName}>(");
+                builder.AppendLine("                new global::Perigon.PostgreSQL.Metadata.EntityModel[]");
+                builder.AppendLine("                {");
+                foreach (var entityFullName in context.EntityFullNames.OrderBy(static name => name, StringComparer.Ordinal))
+                {
+                    builder.AppendLine($"                    global::Perigon.PostgreSQL.Metadata.EntityModel.For<{entityFullName}>(),");
+                }
+
+                builder.AppendLine("                });");
             }
 
-            builder.AppendLine("                });");
+            if (context.Migrations.Count > 0)
+            {
+                builder.AppendLine($"            global::Perigon.PostgreSQL.Migrations.MigrationRegistry.RegisterContext<{context.FullName}>(");
+                builder.AppendLine("                new global::Perigon.PostgreSQL.Migrations.RegisteredMigration[]");
+                builder.AppendLine("                {");
+                foreach (var migration in context.Migrations
+                    .OrderBy(static migration => migration.Id, StringComparer.Ordinal)
+                    .ThenBy(static migration => migration.FullName, StringComparer.Ordinal))
+                {
+                    builder.AppendLine($"                    new global::Perigon.PostgreSQL.Migrations.RegisteredMigration({Literal(migration.Id)}, new {migration.FullName}()),");
+                }
+
+                builder.AppendLine("                });");
+            }
         }
 
         foreach (var materializer in materializerList)
@@ -874,6 +977,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
     private sealed class ContextInfo
     {
         private readonly HashSet<string> _entityFullNames = new(StringComparer.Ordinal);
+        private readonly List<MigrationInfo> _migrations = [];
 
         public ContextInfo(string fullName, string safeName)
         {
@@ -887,10 +991,33 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         public IReadOnlyCollection<string> EntityFullNames => _entityFullNames;
 
+        public IReadOnlyList<MigrationInfo> Migrations => _migrations;
+
         public void AddEntity(string entityFullName)
         {
             _entityFullNames.Add(entityFullName);
         }
+
+        public void AddMigration(MigrationInfo migration)
+        {
+            _migrations.Add(migration);
+        }
+    }
+
+    private sealed class MigrationInfo
+    {
+        public MigrationInfo(string fullName, string contextFullName, string id)
+        {
+            FullName = fullName;
+            ContextFullName = contextFullName;
+            Id = id;
+        }
+
+        public string FullName { get; }
+
+        public string ContextFullName { get; }
+
+        public string Id { get; }
     }
 
     private sealed class EntityInfo

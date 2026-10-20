@@ -7,6 +7,11 @@ internal static class PerigonTool
 {
     public static async Task<int> RunAsync(string[] args)
     {
+        if (MigrationCli.IsMigrationCommand(args))
+        {
+            return await MigrationCli.RunAsync(args).ConfigureAwait(false);
+        }
+
         if (!IsScaffoldCommand(args))
         {
             WriteUsage();
@@ -75,7 +80,13 @@ internal static class PerigonTool
 
     private static void WriteUsage()
     {
-        Console.WriteLine("Usage: dotnet perigon database scaffold --connection <connection-string> [--context <DbContextName>] [--namespace <namespace>] [--output <directory>] [--schema <schema>] [--table <table>] [--force] [--dry-run] [--no-views]");
+        Console.WriteLine("Usage:");
+        Console.WriteLine("  dotnet perigon database scaffold --connection <connection-string> [--context <DbContextName>] [--namespace <namespace>] [--output <directory>] [--schema <schema>] [--table <table>] [--force] [--dry-run] [--no-views]");
+        Console.WriteLine("  dotnet perigon migrations add <name> --project <project.csproj> [--context <DbContextName>] [--output <directory>]");
+        Console.WriteLine("  dotnet perigon migrations list --project <project.csproj> [--context <DbContextName>]");
+        Console.WriteLine("  dotnet perigon migrations script --project <project.csproj> [--from <id|0>] [--to <id|0>] [--idempotent]");
+        Console.WriteLine("  dotnet perigon database update --project <project.csproj> --connection <connection-string> [--target <id|0>]");
+        Console.WriteLine("  dotnet perigon database baseline --project <project.csproj> --connection <connection-string> [--migration <id>]");
     }
 }
 
