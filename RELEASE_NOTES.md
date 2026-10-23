@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.7
+
+- Fixed clean-build packaging of `Perigon.PostgreSQL` so `Perigon.PostgreSQL.SourceGeneration.dll` and `Perigon.PostgreSQL.Analyzers.dll` are included under `analyzers/dotnet/cs`. This ensures generated entity model registration is available to package consumers, including migration and schema-creation flows.
+
 ## 0.1.6
 
 - Added incremental PostgreSQL schema migrations with deterministic model snapshots and diffs, generated `Up`/`Down` migration source, SQL scripts, database update and baseline commands, migration history tracking, transactional application with advisory locking, and NativeAOT-safe static migration registration. Existing `EnsureCreated` databases can be validated and baselined before the migration system takes over.
