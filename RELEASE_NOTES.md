@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.6
+
+- Added incremental PostgreSQL schema migrations with deterministic model snapshots and diffs, generated `Up`/`Down` migration source, SQL scripts, database update and baseline commands, migration history tracking, transactional application with advisory locking, and NativeAOT-safe static migration registration. Existing `EnsureCreated` databases can be validated and baselined before the migration system takes over.
+
 ## 0.1.5
 
 - Made query translation fail explicitly for unsupported LINQ shapes, added exact string-method overload handling, escaped `LIKE` patterns with an explicit `ESCAPE` clause, and corrected per-parent `IncludeMany` paging and identity-key upsert validation.

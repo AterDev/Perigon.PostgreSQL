@@ -9,14 +9,13 @@
     <ToolCommandName>dotnet-perigon</ToolCommandName>
     <PackageId>Perigon.PostgreSQL.Tools</PackageId>
     <Title>Perigon.PostgreSQL.Tools</Title>
-    <Version>0.1.5</Version>
-    <Description>Command line tools for Perigon.PostgreSQL reverse engineering and scaffolding.</Description>
+    <Version>0.1.6</Version>
+    <Description>Command line tools for Perigon.PostgreSQL migrations, reverse engineering, and scaffolding.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <PackageReleaseNotes>0.1.5 updates the reverse-engineering and scaffolding
-      command surface, aligns the CLI package with the core library release, and
-      keeps the dotnet-perigon tool packaging metadata current. See
-      RELEASE_NOTES.md for details.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.6 adds migration generation, listing, SQL scripts,
+      database updates, and baseline commands alongside reverse engineering and
+      scaffolding. See RELEASE_NOTES.md for details.</PackageReleaseNotes>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
