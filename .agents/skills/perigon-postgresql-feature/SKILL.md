@@ -93,6 +93,15 @@ dotnet publish .\tests\Perigon.PostgreSQL.NativeAotSmoke\Perigon.PostgreSQL.Nati
 
 If PostgreSQL or Docker is unavailable, state which integration validation could not run and keep the unit/build validation complete.
 
+## 8. Package Release Workflow
+
+Package publishing is automated by `.github/workflows/build.yml` through NuGet Trusted Publishing with GitHub OIDC.
+
+- For a release, keep the package versions in both project files aligned with the `vMAJOR.MINOR.PATCH` tag. The workflow validates the tag, runs unit tests, packs both packages, and pushes them to NuGet.
+- Ensure the workflow and release changes are committed and pushed to the intended repository branch; push the matching version tag when triggering a release.
+- Use the configured `NUGET_USER` identity for `NuGet/login@v1`. Do not request or store a NuGet API key in the repository.
+- Unless the user explicitly asks, finish release work after confirming the intended commit and tag were pushed. Do not check the NuGet Gallery/feed or wait for package indexing to verify publication.
+
 ## Final Response Checklist
 
 Report:
