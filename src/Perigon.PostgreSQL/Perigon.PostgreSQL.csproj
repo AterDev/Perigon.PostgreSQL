@@ -8,7 +8,7 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <PackageId>Perigon.PostgreSQL</PackageId>
     <Title>Perigon.PostgreSQL</Title>
-    <Version>0.1.7</Version>
+    <Version>0.1.8</Version>
     <Authors>Niltor</Authors>
     <Company>AterDev</Company>
     <Description>PostgreSQL-only NativeAOT-friendly data access library with deterministic SQL, LINQ
@@ -20,10 +20,9 @@
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageIcon>perigon_logo.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>0.1.7 fixes clean-build NuGet packing so the source
-      generator and analyzer assemblies are included. This restores generated
-      entity model registration required by migrations and schema creation.
-      See RELEASE_NOTES.md for details.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.1.8 fixes recursive dependency resolution in the
+      migration CLI, preventing stack overflow when an assembly cannot be
+      resolved. See RELEASE_NOTES.md for details.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

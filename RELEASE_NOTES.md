@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.8
+
+- Fixed recursive dependency resolution in the migration CLI that could repeatedly enumerate shared framework directories and overflow the stack when an assembly could not be resolved.
+
 ## 0.1.7
 
 - Fixed clean-build packaging of `Perigon.PostgreSQL` so `Perigon.PostgreSQL.SourceGeneration.dll` and `Perigon.PostgreSQL.Analyzers.dll` are included under `analyzers/dotnet/cs`. This ensures generated entity model registration is available to package consumers, including migration and schema-creation flows.

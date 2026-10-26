@@ -9,13 +9,14 @@
     <ToolCommandName>dotnet-perigon</ToolCommandName>
     <PackageId>Perigon.PostgreSQL.Tools</PackageId>
     <Title>Perigon.PostgreSQL.Tools</Title>
-    <Version>0.1.7</Version>
+    <Version>0.1.8</Version>
     <Description>Command line tools for Perigon.PostgreSQL migrations, reverse engineering, and scaffolding.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <PackageReleaseNotes>0.1.7 aligns with the core package fix for clean-build
-      NuGet packing. Includes migration generation, listing, SQL scripts, database
-      updates, and baseline commands alongside reverse engineering and scaffolding.
+    <PackageReleaseNotes>0.1.8 fixes recursive dependency resolution that could
+      overflow the stack when an assembly could not be resolved. Includes migration
+      generation, listing, SQL scripts, database updates, and baseline commands
+      alongside reverse engineering and scaffolding.
       See RELEASE_NOTES.md for details.</PackageReleaseNotes>
     <IsPackable>true</IsPackable>
   </PropertyGroup>

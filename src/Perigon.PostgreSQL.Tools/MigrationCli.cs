@@ -533,8 +533,9 @@ internal sealed class ProjectContext : IAsyncDisposable
                 if (File.Exists(candidate)) return AssemblyLoadContext.Default.LoadFromAssemblyPath(candidate);
             }
         }
-        try { return AssemblyLoadContext.Default.LoadFromAssemblyName(assemblyName); }
-        catch (FileNotFoundException) { return null; }
+        // Calling LoadFromAssemblyName from this Resolving callback re-enters the same callback
+        // when the assembly is unavailable, recursively repeating the framework-directory scan.
+        return null;
     }
 
     private static IReadOnlyList<Type> GetLoadableTypes(Assembly assembly)
