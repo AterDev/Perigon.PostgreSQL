@@ -15,6 +15,98 @@ public sealed class QueryShapeIntegrationTests
     }
 
     [Fact]
+    public async Task Reusing_same_query_rebinds_cached_values_and_null_semantics()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertManyReturningAsync(
+        [
+            new IntegrationUser
+            {
+                UserName = "Cached-Alpha",
+                Age = 41,
+                IsActive = true,
+                Status = "cache-alpha",
+                CreatedAt = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["cache"],
+                ProfileJson = "{}"
+            },
+            new IntegrationUser
+            {
+                UserName = "Cached-Beta",
+                Age = 42,
+                IsActive = true,
+                Status = "cache-beta",
+                CreatedAt = new DateTime(2026, 7, 2, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["cache"],
+                ProfileJson = "{}"
+            },
+            new IntegrationUser
+            {
+                UserName = "Cached-Null",
+                Age = 43,
+                IsActive = true,
+                Status = null,
+                CreatedAt = new DateTime(2026, 7, 3, 0, 0, 0, DateTimeKind.Utc),
+                Tags = ["cache"],
+                ProfileJson = "{}"
+            }
+        ]);
+
+        string? status = "cache-alpha";
+        var query = db.IntegrationUsers
+            .Where(user => user.Status == status)
+            .OrderBy(user => user.UserName);
+
+        var alpha = (await query.ToListAsync()).Select(user => user.UserName).ToArray();
+        status = "cache-beta";
+        var beta = (await query.ToListAsync()).Select(user => user.UserName).ToArray();
+        status = null;
+        var nullStatus = (await query.ToListAsync()).Select(user => user.UserName).ToArray();
+
+        Assert.Equal(["Cached-Alpha"], alpha);
+        Assert.Equal(["Cached-Beta"], beta);
+        Assert.Equal(["Cached-Null"], nullStatus);
+    }
+
+    [Fact]
+    public async Task Generated_materializer_preserves_provider_conversion_semantics()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Typed-Materialization",
+            Age = 41,
+            IsActive = true,
+            Status = "Active",
+            CreatedAt = new DateTime(2026, 6, 18, 12, 34, 56, DateTimeKind.Utc),
+            UpdatedAt = null,
+            Tags = ["typed"],
+            ProfileJson = "{}"
+        });
+
+        var rows = await db.SqlQuery<IntegrationTypedMaterializationRow>($"""
+            SELECT id AS "UserId",
+                   created_at AS "CreatedAt",
+                   updated_at AS "UpdatedAt",
+                   status AS "StatusCode"
+            FROM integration_users
+            WHERE user_name = {"Typed-Materialization"}
+            """).ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.True(row.UserId > 0);
+        Assert.Equal(new DateTimeOffset(2026, 6, 18, 12, 34, 56, TimeSpan.Zero), row.CreatedAt);
+        Assert.Null(row.UpdatedAt);
+        Assert.Equal(IntegrationStatusCode.Active, row.StatusCode);
+
+        var scalarIds = await db.IntegrationUsers
+            .Where(user => user.UserName == "Typed-Materialization")
+            .Select(user => user.Id)
+            .ToScalarListAsync();
+        Assert.Single(scalarIds);
+    }
+
+    [Fact]
     public async Task Inner_join_projection_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);

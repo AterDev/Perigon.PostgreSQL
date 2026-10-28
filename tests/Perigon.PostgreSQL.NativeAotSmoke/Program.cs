@@ -44,6 +44,18 @@ var sql = db.Users
 Console.WriteLine(sql.CommandText);
 Console.WriteLine(sql.Parameters.Count);
 
+static IQueryable<SmokeUser> RebuildQuery(SmokeDbContext context, int age) =>
+    context.Users.Where(user => user.Age >= age).OrderBy(user => user.UserName).Take(5);
+
+var cachedFirst = RebuildQuery(db, 18).ToQuerySql();
+var cachedSecond = RebuildQuery(db, 25).ToQuerySql();
+if (cachedFirst.CommandText != cachedSecond.CommandText ||
+    !cachedSecond.CommandText.Contains("e.\"user_name\"", StringComparison.Ordinal) ||
+    cachedSecond.Parameters[0].Value is not 25)
+{
+    throw new InvalidOperationException("NativeAOT smoke test expected rebuilt query parameters and mapped columns to remain correct.");
+}
+
 var connectionString = Environment.GetEnvironmentVariable("PERIGON_AOT_CONNECTION_STRING");
 if (!string.IsNullOrWhiteSpace(connectionString))
 {

@@ -53,7 +53,13 @@ internal static class StructuredSqlBuilder
             }
         }
 
-        return SelectSqlBuilder.Build(ResolveEntityModel(expression), QueryModelFactory.Create(expression));
+        var model = ResolveEntityModel(expression);
+        if (SimpleQueryTemplateCache.TryBuild(model, expression, out var cachedSql))
+        {
+            return cachedSql;
+        }
+
+        return SelectSqlBuilder.Build(model, QueryModelFactory.Create(expression));
     }
 
     private static BoundSql WithDistinct(BoundSql sql)

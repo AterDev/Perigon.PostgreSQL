@@ -308,7 +308,7 @@ public sealed class EntityModelGeneratorTests
         var generated = RunGenerator(source, out var diagnostics);
 
         Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
-        Assert.Contains("EntityMaterializerRegistry.Register<global::Demo.UserProjection>", generated);
+        Assert.Contains("EntityMaterializerRegistry.RegisterFactory<global::Demo.UserProjection>", generated);
         Assert.Contains("private static global::Demo.UserProjection Materialize_", generated);
         Assert.DoesNotContain("AbstractProjection", generated);
     }
@@ -348,6 +348,7 @@ public sealed class EntityModelGeneratorTests
         Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
         Assert.Contains("private static global::Demo.InitProjection Materialize_", generated);
         Assert.Contains("Id = ReadValue<", generated);
+        Assert.Contains("reader.GetFieldValue<T>(ordinal)", generated);
         Assert.Contains("ConvertValue<T>", generated);
         Assert.Contains("\"demo\\nusers\"", generated);
         Assert.Contains("\"demo\\rschema\"", generated);

@@ -479,7 +479,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         foreach (var materializer in materializerList)
         {
-            builder.AppendLine($"            global::Perigon.PostgreSQL.Execution.EntityMaterializerRegistry.Register<{materializer.FullName}>(Materialize_{materializer.SafeName});");
+            builder.AppendLine($"            global::Perigon.PostgreSQL.Execution.EntityMaterializerRegistry.RegisterFactory<{materializer.FullName}>(CreateMaterializer_{materializer.SafeName});");
         }
 
         builder.AppendLine("        }");
@@ -487,7 +487,28 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         foreach (var entity in materializerList)
         {
             builder.AppendLine();
-            builder.AppendLine($"        private static {entity.FullName} Materialize_{entity.SafeName}(global::Npgsql.NpgsqlDataReader reader)");
+            var writableColumns = entity.Columns
+                .Where(static column => column.CanWrite)
+                .ToArray();
+            var materializerArguments = string.Join(", ", writableColumns.Select(static column => $"ordinal_{column.SafeName}"));
+            var typedArguments = string.Join(", ", writableColumns.Select(static column => $"typed_{column.SafeName}"));
+            var ordinalParameters = string.Join(", ", writableColumns.Select(static column => $"int ordinal_{column.SafeName}"));
+            var typedParameters = string.Join(", ", writableColumns.Select(static column => $"bool typed_{column.SafeName}"));
+            var materializerParameters = string.Join(", ", new[] { ordinalParameters, typedParameters }.Where(static value => value.Length > 0));
+
+            builder.AppendLine($"        private static global::System.Func<global::Npgsql.NpgsqlDataReader, {entity.FullName}> CreateMaterializer_{entity.SafeName}(global::Npgsql.NpgsqlDataReader reader)");
+            builder.AppendLine("        {");
+            foreach (var column in writableColumns)
+            {
+                builder.AppendLine($"            var ordinal_{column.SafeName} = ResolveOrdinal(reader, {column.ColumnNameLiteral}, {Literal(column.PropertyName)});");
+                builder.AppendLine($"            var typed_{column.SafeName} = ordinal_{column.SafeName} >= 0 && reader.GetFieldType(ordinal_{column.SafeName}) == typeof({column.ReadValueType});");
+            }
+
+            var allMaterializerArguments = string.Join(", ", new[] { "row", materializerArguments, typedArguments }.Where(static value => value.Length > 0));
+            builder.AppendLine($"            return row => Materialize_{entity.SafeName}({allMaterializerArguments});");
+            builder.AppendLine("        }");
+            builder.AppendLine();
+            builder.AppendLine($"        private static {entity.FullName} Materialize_{entity.SafeName}(global::Npgsql.NpgsqlDataReader reader{(materializerParameters.Length == 0 ? string.Empty : ", " + materializerParameters)})");
             builder.AppendLine("        {");
             var initColumns = entity.Columns
                 .Where(static column => column.CanWrite && column.IsInitOnly)
@@ -502,7 +523,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 builder.AppendLine("            {");
                 foreach (var column in initColumns)
                 {
-                    builder.AppendLine($"                {column.MemberAccessName} = ReadValue<{column.ReadValueType}>(reader, {column.ColumnNameLiteral}, {Literal(column.PropertyName)}),");
+                    builder.AppendLine($"                {column.MemberAccessName} = ReadValue<{column.ReadValueType}>(reader, ordinal_{column.SafeName}, typed_{column.SafeName}),");
                 }
 
                 builder.AppendLine("            };");
@@ -510,15 +531,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
             foreach (var column in entity.Columns.Where(static column => column.CanWrite && !column.IsInitOnly))
             {
-                builder.AppendLine($"            var ordinal_{column.SafeName} = TryGetOrdinal(reader, {column.ColumnNameLiteral});");
-                builder.AppendLine($"            if (ordinal_{column.SafeName} < 0)");
+                builder.AppendLine($"            if (TryReadValue<{column.ReadValueType}>(reader, ordinal_{column.SafeName}, typed_{column.SafeName}, out var value_{column.SafeName}))");
                 builder.AppendLine("            {");
-                builder.AppendLine($"                ordinal_{column.SafeName} = TryGetOrdinal(reader, {Literal(column.PropertyName)});");
-                builder.AppendLine("            }");
-                builder.AppendLine();
-                builder.AppendLine($"            if (ordinal_{column.SafeName} >= 0 && !reader.IsDBNull(ordinal_{column.SafeName}))");
-                builder.AppendLine("            {");
-                builder.AppendLine($"                entity.{column.MemberAccessName} = ConvertValue<{column.ReadValueType}>(reader.GetValue(ordinal_{column.SafeName}));");
+                builder.AppendLine($"                entity.{column.MemberAccessName} = value_{column.SafeName};");
                 builder.AppendLine("            }");
                 builder.AppendLine();
             }
@@ -527,6 +542,12 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             builder.AppendLine("        }");
         }
 
+        builder.AppendLine();
+        builder.AppendLine("        private static int ResolveOrdinal(global::Npgsql.NpgsqlDataReader reader, string columnName, string propertyName)");
+        builder.AppendLine("        {");
+        builder.AppendLine("            var ordinal = TryGetOrdinal(reader, columnName);");
+        builder.AppendLine("            return ordinal >= 0 ? ordinal : TryGetOrdinal(reader, propertyName);");
+        builder.AppendLine("        }");
         builder.AppendLine();
         builder.AppendLine("        private static int TryGetOrdinal(global::Npgsql.NpgsqlDataReader reader, string name)");
         builder.AppendLine("        {");
@@ -540,17 +561,40 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         builder.AppendLine("            }");
         builder.AppendLine("        }");
         builder.AppendLine();
-        builder.AppendLine("        private static T ReadValue<T>(global::Npgsql.NpgsqlDataReader reader, string columnName, string propertyName)");
+        builder.AppendLine("        private static T ReadValue<T>(global::Npgsql.NpgsqlDataReader reader, int ordinal, bool useTypedGetter)");
         builder.AppendLine("        {");
-        builder.AppendLine("            var ordinal = TryGetOrdinal(reader, columnName);");
-        builder.AppendLine("            if (ordinal < 0)");
+        builder.AppendLine("            return TryReadValue<T>(reader, ordinal, useTypedGetter, out var value) ? value : default!;");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        private static bool TryReadValue<T>(global::Npgsql.NpgsqlDataReader reader, int ordinal, bool useTypedGetter, out T value)");
+        builder.AppendLine("        {");
+        builder.AppendLine("            if (ordinal < 0 || reader.IsDBNull(ordinal))");
         builder.AppendLine("            {");
-        builder.AppendLine("                ordinal = TryGetOrdinal(reader, propertyName);");
+        builder.AppendLine("                value = default!;");
+        builder.AppendLine("                return false;");
         builder.AppendLine("            }");
         builder.AppendLine();
-        builder.AppendLine("            return ordinal >= 0 && !reader.IsDBNull(ordinal)");
-        builder.AppendLine("                ? ConvertValue<T>(reader.GetValue(ordinal))");
-        builder.AppendLine("                : default!;");
+        builder.AppendLine("            value = ReadValueCore<T>(reader, ordinal, useTypedGetter);");
+        builder.AppendLine("            return true;");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        private static T ReadValueCore<T>(global::Npgsql.NpgsqlDataReader reader, int ordinal, bool useTypedGetter)");
+        builder.AppendLine("        {");
+        builder.AppendLine("            // Nullable value types and enums need the conversion path to preserve");
+        builder.AppendLine("            // the library's existing PostgreSQL/null/enum semantics.");
+        builder.AppendLine("            if (!useTypedGetter)");
+        builder.AppendLine("            {");
+        builder.AppendLine("                return ConvertValue<T>(reader.GetValue(ordinal));");
+        builder.AppendLine("            }");
+        builder.AppendLine();
+        builder.AppendLine("            try");
+        builder.AppendLine("            {");
+        builder.AppendLine("                return reader.GetFieldValue<T>(ordinal);");
+        builder.AppendLine("            }");
+        builder.AppendLine("            catch (global::System.InvalidCastException)");
+        builder.AppendLine("            {");
+        builder.AppendLine("                return ConvertValue<T>(reader.GetValue(ordinal));");
+        builder.AppendLine("            }");
         builder.AppendLine("        }");
         builder.AppendLine();
         builder.AppendLine("        private static T ConvertValue<T>(object value)");

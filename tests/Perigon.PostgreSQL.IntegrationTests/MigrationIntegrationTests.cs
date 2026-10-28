@@ -49,6 +49,13 @@ public sealed class MigrationIntegrationTests(DockerPostgresFixture fixture)
     {
         var schema = fixture.CreateIsolatedSchema("migration_baseline");
         var connectionString = ForSchema(schema);
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString))
+        {
+            await connection.OpenAsync();
+            // CreateIsolatedSchema restricts the generated name to letters, digits and underscores.
+            await using var command = new NpgsqlCommand($"CREATE SCHEMA \"{schema}\"", connection);
+            await command.ExecuteNonQueryAsync();
+        }
         await using var db = new BaselineMigrationTestDbContext(connectionString, schema);
         await db.EnsureCreatedAsync();
         var expectedModel = db.GetMigrationModel();

@@ -14,7 +14,7 @@ public sealed class EntityModelTests
         var model = EntityModel.For<ConventionUser>();
 
         Assert.True(model.IsGenerated);
-        Assert.True(EntityMaterializerRegistry.TryGet<ConventionUser>(out _));
+        Assert.True(EntityMaterializerRegistry.TryGetFactory<ConventionUser>(out _));
         Assert.True(EntityValueAccessorRegistry.TryGetAccessor(typeof(ConventionUser), nameof(ConventionUser.UserName), out _));
         Assert.Equal("convention_users", model.TableName);
         Assert.Equal("id", model.GetColumn(nameof(ConventionUser.Id)).ColumnName);
@@ -22,6 +22,22 @@ public sealed class EntityModelTests
         Assert.Equal("age", model.GetColumn(nameof(ConventionUser.Age)).ColumnName);
         Assert.Equal("status", model.GetColumn(nameof(ConventionUser.Status)).ColumnName);
         Assert.Equal("tags", model.GetColumn(nameof(ConventionUser.Tags)).ColumnName);
+    }
+
+    [Fact]
+    public void Materializer_registration_last_writer_wins_between_factory_and_delegate()
+    {
+        EntityMaterializerRegistry.RegisterFactory<ManualMaterializerType>(_ => _ => new ManualMaterializerType());
+        Assert.True(EntityMaterializerRegistry.TryGetFactory<ManualMaterializerType>(out _));
+        Assert.True(EntityMaterializerRegistry.TryGet<ManualMaterializerType>(out _));
+
+        EntityMaterializerRegistry.Register<ManualMaterializerType>(_ => new ManualMaterializerType());
+        Assert.True(EntityMaterializerRegistry.TryGet<ManualMaterializerType>(out _));
+        Assert.False(EntityMaterializerRegistry.TryGetFactory<ManualMaterializerType>(out _));
+
+        EntityMaterializerRegistry.RegisterFactory<ManualMaterializerType>(_ => _ => new ManualMaterializerType());
+        Assert.True(EntityMaterializerRegistry.TryGetFactory<ManualMaterializerType>(out _));
+        Assert.True(EntityMaterializerRegistry.TryGet<ManualMaterializerType>(out _));
     }
 
     [Fact]
@@ -121,5 +137,9 @@ public sealed class EntityModelTests
     private sealed class RuntimeNotMappedEntity
     {
         public int Id { get; set; }
+    }
+
+    private sealed class ManualMaterializerType
+    {
     }
 }

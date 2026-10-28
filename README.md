@@ -180,6 +180,10 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres")!));
 ```
 
+`AddDbContext` 会在容器中按生效的连接字符串复用单例 `NpgsqlDataSource`，并在容器释放时释放它。这样每个 scoped `DbContext` 不会重复创建和销毁连接池。多租户场景如果每个请求都会产生新的连接字符串，会让数据源缓存随连接字符串数量增长；此时应在应用层按租户管理有限数量的 `NpgsqlDataSource`，再通过 `UseNpgsql(dataSource)` 注入，而不是为每个请求拼接新的连接字符串。
+
+直接使用 `new AppDbContext(connectionString)` 仍由上下文自行创建和释放数据源，适合短期工具、迁移和脚本。长时间运行的服务应注册并共享一个 `NpgsqlDataSource`，或使用上面的 DI 注册方式。
+
 ## 示例项目
 
 示例项目位于：

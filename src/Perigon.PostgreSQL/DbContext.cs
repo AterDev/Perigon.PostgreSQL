@@ -384,38 +384,7 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
 
     internal string BuildEffectiveConnectionString()
     {
-        if (string.IsNullOrWhiteSpace(_options.ConnectionString))
-        {
-            throw new InvalidOperationException("PostgreSQL connection string was not configured.");
-        }
-
-        var builder = new NpgsqlConnectionStringBuilder(_options.ConnectionString);
-        if (_options.ConnectionTimeout is not null)
-        {
-            builder.Timeout = TimeoutSeconds(_options.ConnectionTimeout.Value, nameof(_options.ConnectionTimeout));
-        }
-
-        if (_options.CommandTimeout is not null)
-        {
-            builder.CommandTimeout = TimeoutSeconds(_options.CommandTimeout.Value, nameof(_options.CommandTimeout));
-        }
-
-        if (_options.PoolingEnabled is not null)
-        {
-            builder.Pooling = _options.PoolingEnabled.Value;
-        }
-
-        if (_options.MinPoolSize is not null)
-        {
-            builder.MinPoolSize = _options.MinPoolSize.Value;
-        }
-
-        if (_options.MaxPoolSize is not null)
-        {
-            builder.MaxPoolSize = _options.MaxPoolSize.Value;
-        }
-
-        return builder.ConnectionString;
+        return _options.BuildEffectiveConnectionString();
     }
 
     private static object? NormalizeParameterValue(object? value)

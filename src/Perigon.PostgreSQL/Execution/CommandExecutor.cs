@@ -47,6 +47,19 @@ internal static class CommandExecutor
             await using var command = context.CreateCommand(sql);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             var results = new List<T>();
+            if (EntityMaterializerRegistry.TryGetFactory<T>(out var generatedFactory) &&
+                (model is null || CanUseGeneratedMaterializer<T>(model)))
+            {
+                var resultMaterializer = generatedFactory(reader);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    results.Add(resultMaterializer(reader));
+                }
+
+                LogCompleted(context, sql, stopwatch, "Query", resultCount: results.Count);
+                return results;
+            }
+
             if (EntityMaterializerRegistry.TryGet<T>(out var generatedMaterializer) &&
                 (model is null || CanUseGeneratedMaterializer<T>(model)))
             {
@@ -215,6 +228,7 @@ internal static class CommandExecutor
             await using var command = context.CreateCommand(sql);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             var results = new List<T>();
+            var useTypedGetter = reader.GetFieldType(0) == typeof(T);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 if (await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false))
@@ -223,9 +237,7 @@ internal static class CommandExecutor
                     continue;
                 }
 
-                var value = reader.GetValue(0);
-                var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
-                results.Add((T)ConvertToTargetType(value, targetType));
+                results.Add(ReadScalarValue<T>(reader, useTypedGetter));
             }
 
             LogCompleted(context, sql, stopwatch, "ScalarList", resultCount: results.Count);
@@ -300,6 +312,26 @@ internal static class CommandExecutor
         }
 
         return Convert.ChangeType(value, targetType, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static T ReadScalarValue<T>(NpgsqlDataReader reader, bool useTypedGetter)
+    {
+        if (useTypedGetter)
+        {
+            try
+            {
+                return reader.GetFieldValue<T>(0);
+            }
+            catch (InvalidCastException)
+            {
+                // Preserve the existing conversion path for provider values whose
+                // CLR type differs from the requested scalar type.
+            }
+        }
+
+        var value = reader.GetValue(0);
+        var targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
+        return (T)ConvertToTargetType(value, targetType);
     }
 
 }
