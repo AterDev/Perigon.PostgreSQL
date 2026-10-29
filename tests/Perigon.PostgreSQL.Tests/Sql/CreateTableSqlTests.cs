@@ -71,6 +71,71 @@ public sealed class CreateTableSqlTests
         Assert.Equal("author_id", foreignKey.DependentColumn.ColumnName);
         Assert.Equal("fluent_blogs", foreignKey.DependentEntity.TableName);
         Assert.Equal("fluent_users", foreignKey.PrincipalEntity.TableName);
+        Assert.Equal(nameof(FluentRelationshipBlog.Author), foreignKey.DependentNavigationName);
+        Assert.Equal(nameof(FluentRelationshipUser.Blogs), foreignKey.PrincipalNavigationName);
+    }
+
+    [Fact]
+    public void Generated_foreign_keys_rebind_fluent_table_and_column_names()
+    {
+        using var db = new GeneratedRelationshipDbContext();
+        var foreignKey = Assert.Single(RelationshipConventions.InferForeignKeys(db.ReadModels()));
+
+        Assert.Equal("renamed_blogs", foreignKey.DependentEntity.TableName);
+        Assert.Equal("owner_id", foreignKey.DependentColumn.ColumnName);
+        Assert.Equal("renamed_users", foreignKey.PrincipalEntity.TableName);
+    }
+
+    [Fact]
+    public void Generated_foreign_keys_are_not_duplicated_after_model_rebinding()
+    {
+        using var db = new GeneratedRelationshipDbContext();
+
+        var foreignKeys = RelationshipConventions.InferForeignKeys(db.ReadModels());
+
+        Assert.Single(foreignKeys);
+    }
+
+    [Fact]
+    public void Generated_foreign_keys_follow_a_fluent_primary_key_change()
+    {
+        using var db = new GeneratedKeyRelationshipDbContext();
+        var foreignKey = Assert.Single(RelationshipConventions.InferForeignKeys(db.ReadModels()));
+
+        Assert.Equal("id", foreignKey.PrincipalColumn.ColumnName);
+        var sql = CreateTableSqlBuilder.BuildAddForeignKey(foreignKey);
+        Assert.Contains("REFERENCES \"generated_key_relationship_users\" (\"id\")", sql);
+    }
+
+    [Fact]
+    public void Fluent_many_to_many_join_entity_registers_two_foreign_keys()
+    {
+        using var db = new ManyToManyDbContext();
+        var foreignKeys = RelationshipConventions.InferForeignKeys(db.ReadModels())
+            .Where(static foreignKey => foreignKey.DependentEntity.ClrType == typeof(ManyToManyEnrollment))
+            .ToArray();
+
+        Assert.Equal(2, foreignKeys.Length);
+        Assert.Contains(foreignKeys, foreignKey => foreignKey.DependentColumn.PropertyName == nameof(ManyToManyEnrollment.StudentId));
+        Assert.Contains(foreignKeys, foreignKey => foreignKey.DependentColumn.PropertyName == nameof(ManyToManyEnrollment.CourseId));
+
+        var joinModel = db.ReadModels().Single(model => model.ClrType == typeof(ManyToManyEnrollment));
+        var createSql = CreateTableSqlBuilder.BuildCreateTable(joinModel);
+        Assert.DoesNotContain("\"student\"", createSql);
+        Assert.DoesNotContain("\"course\"", createSql);
+    }
+
+    [Fact]
+    public void InferForeignKeys_supports_principal_side_collection_configuration()
+    {
+        using var db = new PrincipalSideRelationshipDbContext();
+        var foreignKey = Assert.Single(RelationshipConventions.InferForeignKeys(db.ReadModels()));
+
+        Assert.Equal("fk_principal_side_author", foreignKey.ConstraintName);
+        Assert.Equal("author_id", foreignKey.DependentColumn.ColumnName);
+        Assert.Equal(typeof(FluentRelationshipBlog), foreignKey.DependentEntity.ClrType);
+        Assert.Equal(typeof(FluentRelationshipUser), foreignKey.PrincipalEntity.ClrType);
+        Assert.Contains("ON DELETE CASCADE", CreateTableSqlBuilder.BuildAddForeignKey(foreignKey));
     }
 
     [Fact]
@@ -150,6 +215,23 @@ public sealed class CreateTableSqlTests
         public string NormalizedName { get; set; } = "";
     }
 
+    public sealed class PrincipalSideRelationshipDbContext : DbContext
+    {
+        public PrincipalSideRelationshipDbContext() : base(_ => { }) { }
+        public DbSet<FluentRelationshipUser> Users => Set<FluentRelationshipUser>();
+        public DbSet<FluentRelationshipBlog> Blogs => Set<FluentRelationshipBlog>();
+        public IReadOnlyList<EntityModel> ReadModels() => GetEntityModels();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<FluentRelationshipUser>()
+                .HasMany(user => user.Blogs).WithOne(blog => blog.Author)
+                .HasForeignKey(blog => blog.AuthorId)
+                .HasConstraintName("fk_principal_side_author")
+                .OnDelete(ReferentialAction.Cascade);
+        }
+    }
+
     public sealed class FluentRelationshipDbContext : DbContext
     {
         public FluentRelationshipDbContext()
@@ -179,6 +261,106 @@ public sealed class CreateTableSqlTests
                     .HasConstraintName("fk_fluent_blogs_author_id");
             });
         }
+    }
+
+    public sealed class GeneratedRelationshipDbContext : DbContext
+    {
+        public GeneratedRelationshipDbContext() : base(_ => { }) { }
+        public DbSet<GeneratedRelationshipUser> Users => Set<GeneratedRelationshipUser>();
+        public DbSet<GeneratedRelationshipBlog> Blogs => Set<GeneratedRelationshipBlog>();
+        public IReadOnlyList<EntityModel> ReadModels() => GetEntityModels();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<GeneratedRelationshipUser>().ToTable("renamed_users");
+            modelBuilder.Entity<GeneratedRelationshipBlog>(entity =>
+            {
+                entity.ToTable("renamed_blogs");
+                entity.Property(x => x.GeneratedRelationshipUserId).HasColumnName("owner_id");
+            });
+        }
+    }
+
+    public sealed class GeneratedRelationshipUser
+    {
+        public int Id { get; set; }
+    }
+
+    public sealed class GeneratedRelationshipBlog
+    {
+        public int Id { get; set; }
+        public int GeneratedRelationshipUserId { get; set; }
+    }
+
+    public sealed class GeneratedKeyRelationshipDbContext : DbContext
+    {
+        public GeneratedKeyRelationshipDbContext() : base(_ => { }) { }
+        public DbSet<GeneratedKeyRelationshipUser> Users => Set<GeneratedKeyRelationshipUser>();
+        public DbSet<GeneratedKeyRelationshipBlog> Blogs => Set<GeneratedKeyRelationshipBlog>();
+        public IReadOnlyList<EntityModel> ReadModels() => GetEntityModels();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<GeneratedKeyRelationshipUser>().HasKey(x => x.Id);
+        }
+    }
+
+    public sealed class GeneratedKeyRelationshipUser
+    {
+        [System.ComponentModel.DataAnnotations.Key]
+        public int Code { get; set; }
+        public int Id { get; set; }
+    }
+
+    public sealed class GeneratedKeyRelationshipBlog
+    {
+        public int Id { get; set; }
+        public int GeneratedKeyRelationshipUserId { get; set; }
+    }
+
+    public sealed class ManyToManyDbContext : DbContext
+    {
+        public ManyToManyDbContext() : base(_ => { }) { }
+        public DbSet<ManyToManyStudent> Students => Set<ManyToManyStudent>();
+        public DbSet<ManyToManyCourse> Courses => Set<ManyToManyCourse>();
+        public DbSet<ManyToManyEnrollment> Enrollments => Set<ManyToManyEnrollment>();
+        public IReadOnlyList<EntityModel> ReadModels() => GetEntityModels();
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<ManyToManyStudent>()
+                .HasMany(student => student.Courses)
+                .WithMany()
+                .UsingEntity<ManyToManyEnrollment>(
+                    enrollment => enrollment.Student,
+                    enrollment => enrollment.Course,
+                    enrollment => enrollment.StudentId,
+                    enrollment => enrollment.CourseId)
+                .ToTable("student_courses")
+                .HasKey(enrollment => new { enrollment.StudentId, enrollment.CourseId });
+        }
+    }
+
+    public sealed class ManyToManyStudent
+    {
+        public int Id { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+        public List<ManyToManyCourse> Courses { get; set; } = [];
+    }
+
+    public sealed class ManyToManyCourse
+    {
+        public int Id { get; set; }
+    }
+
+    public sealed class ManyToManyEnrollment
+    {
+        public int StudentId { get; set; }
+        public int CourseId { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+        public ManyToManyStudent? Student { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+        public ManyToManyCourse? Course { get; set; }
     }
 
     public sealed class FluentRelationshipUser

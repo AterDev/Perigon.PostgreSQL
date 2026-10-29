@@ -21,10 +21,21 @@ internal static class StructuredSqlBuilder
             return groupedQuery;
         }
 
+        if (TryBuildPostProjectionQuery(expression, out var projectedQuery))
+        {
+            return projectedQuery;
+        }
+
         if (expression is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable))
         {
             if (call.Method.Name == nameof(Queryable.Distinct))
             {
+                if (HasOrdering(call.Arguments[0]))
+                {
+                    throw new UnsupportedQueryExpressionException(
+                        "Distinct over an ordered query is not supported; apply Distinct before OrderBy.");
+                }
+
                 return WithDistinct(Build(call.Arguments[0]));
             }
 
@@ -62,6 +73,91 @@ internal static class StructuredSqlBuilder
         return SelectSqlBuilder.Build(model, QueryModelFactory.Create(expression));
     }
 
+    private static bool TryBuildPostProjectionQuery(
+        Expression expression,
+        [NotNullWhen(true)] out BoundSql? sql)
+    {
+        var query = new PostProjectionQuery();
+        if (!TryReadPostProjectionQuery(expression, query, out var selectCall) ||
+            !query.HasPostOperation ||
+            (query.HasDistinct && query.IsOnlyDistinct))
+        {
+            sql = null;
+            return false;
+        }
+
+        if (selectCall.Arguments[0] is MethodCallExpression groupBy &&
+            groupBy.Method.DeclaringType == typeof(Queryable) &&
+            groupBy.Method.Name == nameof(Queryable.GroupBy))
+        {
+            if (query.HasDistinct)
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "Distinct after a GroupBy projection is not supported in post-projection translation.");
+            }
+
+            sql = null;
+            return false;
+        }
+
+        var selector = UnquoteLambda(selectCall.Arguments[1]);
+        var inner = BuildProjection(selectCall.Arguments[0], selector);
+        if (inner.NonNullableAggregateColumns.Count > 0)
+        {
+            throw new UnsupportedQueryExpressionException(
+                "Post-projection operators are not supported for non-nullable aggregate projections.");
+        }
+        if (query.HasDistinct)
+        {
+            if (HasOrdering(selectCall.Arguments[0]))
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "Distinct over an ordered query is not supported; apply Distinct before OrderBy.");
+            }
+
+            inner = WithDistinct(inner);
+        }
+        var parameters = new ParameterBag(inner.Parameters);
+        var translator = new ProjectedSqlExpressionTranslator(
+            parameters,
+            "p",
+            scalarProjectionName: ReadScalarProjectionName(selector.Body));
+        var commandText = $"SELECT * FROM ({inner.CommandText}) AS p";
+
+        if (query.Predicates.Count > 0)
+        {
+            commandText += " WHERE " + string.Join(" AND ", query.Predicates.Select(translator.TranslatePredicate));
+        }
+
+        if (query.Orderings.Count > 0)
+        {
+            var orderings = query.Orderings.Select(o =>
+                translator.TranslateMember(o.KeySelector) + (o.Descending ? " DESC" : " ASC"));
+            commandText += " ORDER BY " + string.Join(", ", orderings);
+        }
+
+        if (query.Take is not null)
+        {
+            commandText += " LIMIT " + parameters.Add(query.Take.Value);
+        }
+
+        if (query.Skip is not null)
+        {
+            commandText += " OFFSET " + parameters.Add(query.Skip.Value);
+        }
+
+        sql = new BoundSql(commandText, parameters.Parameters);
+        return true;
+    }
+
+    private static string? ReadScalarProjectionName(Expression expression)
+    {
+        expression = StripConvert(expression);
+        return expression is MemberExpression member && member.Expression is not null
+            ? member.Member.Name
+            : null;
+    }
+
     private static BoundSql WithDistinct(BoundSql sql)
     {
         const string select = "SELECT ";
@@ -69,7 +165,7 @@ internal static class StructuredSqlBuilder
         return sql.CommandText.StartsWith(selectDistinct, StringComparison.Ordinal)
             ? sql
             : sql.CommandText.StartsWith(select, StringComparison.Ordinal)
-                ? new BoundSql(selectDistinct + sql.CommandText[select.Length..], sql.Parameters)
+                ? new BoundSql(selectDistinct + sql.CommandText[select.Length..], sql.Parameters, sql.NonNullableAggregateColumns)
                 : throw new UnsupportedQueryExpressionException("Distinct can only be applied to SELECT queries.");
     }
 
@@ -165,25 +261,28 @@ internal static class StructuredSqlBuilder
                 switch (call.Method.Name)
                 {
                     case nameof(Queryable.Where):
-                        query.Predicates.Add(UnquoteLambda(call.Arguments[1]));
+                        query.AddPredicate(UnquoteLambda(call.Arguments[1]));
+                        break;
+                    case nameof(Queryable.Distinct):
+                        query.AddDistinct();
                         break;
                     case nameof(Queryable.OrderBy):
-                        query.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), false));
+                        query.AddOrdering(UnquoteLambda(call.Arguments[1]), false, primary: true);
                         break;
                     case nameof(Queryable.OrderByDescending):
-                        query.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), true));
+                        query.AddOrdering(UnquoteLambda(call.Arguments[1]), true, primary: true);
                         break;
                     case nameof(Queryable.ThenBy):
-                        query.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), false));
+                        query.AddOrdering(UnquoteLambda(call.Arguments[1]), false, primary: false);
                         break;
                     case nameof(Queryable.ThenByDescending):
-                        query.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), true));
+                        query.AddOrdering(UnquoteLambda(call.Arguments[1]), true, primary: false);
                         break;
                     case nameof(Queryable.Skip):
-                        query.Skip = ReadInt(call.Arguments[1]);
+                        query.AddSkip(ReadInt(call.Arguments[1]));
                         break;
                     case nameof(Queryable.Take):
-                        query.Take = ReadInt(call.Arguments[1]);
+                        query.AddTake(ReadInt(call.Arguments[1]));
                         break;
                 }
 
@@ -203,7 +302,28 @@ internal static class StructuredSqlBuilder
             or nameof(Queryable.ThenBy)
             or nameof(Queryable.ThenByDescending)
             or nameof(Queryable.Skip)
-            or nameof(Queryable.Take);
+            or nameof(Queryable.Take)
+            or nameof(Queryable.Distinct);
+    }
+
+    private static bool HasOrdering(Expression expression)
+    {
+        expression = StripConvert(expression);
+        if (expression is not MethodCallExpression call ||
+            call.Method.DeclaringType != typeof(Queryable))
+        {
+            return false;
+        }
+
+        if (call.Method.Name is nameof(Queryable.OrderBy)
+            or nameof(Queryable.OrderByDescending)
+            or nameof(Queryable.ThenBy)
+            or nameof(Queryable.ThenByDescending))
+        {
+            return true;
+        }
+
+        return call.Arguments.Count > 0 && HasOrdering(call.Arguments[0]);
     }
 
     private static BoundSql BuildProjection(Expression sourceExpression, LambdaExpression selector)
@@ -211,16 +331,18 @@ internal static class StructuredSqlBuilder
         var model = ResolveEntityModel(sourceExpression);
         var parameters = new ParameterBag();
         const string alias = "e";
-        var selections = ReadSelections(selector.Body, new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>
+        var aliases = new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>
         {
             [selector.Parameters[0]] = (model, alias)
-        });
+        };
+        var selections = ReadSelections(selector.Body, aliases, parameters: parameters);
 
         var sql = $"SELECT {string.Join(", ", selections)} FROM {model.StoreObjectName} AS {alias}";
         var queryModel = QueryModelFactory.Create(sourceExpression);
         AppendWhereAndOrder(model, queryModel, parameters, alias, ref sql);
         AppendLimitOffset(queryModel, parameters, ref sql);
-        return new BoundSql(sql, parameters.Parameters);
+        var nonNullableAggregateColumns = ReadNonNullableAggregateOutputs(selector.Body);
+        return new BoundSql(sql, parameters.Parameters, nonNullableAggregateColumns);
     }
 
     private static BoundSql BuildJoin(MethodCallExpression join)
@@ -247,11 +369,14 @@ internal static class StructuredSqlBuilder
         var selections = ReadSelections(resultSelector.Body, aliases);
         var onLeft = TranslateMember(outerKey.Body, aliases);
         var onRight = TranslateMember(innerKey.Body, aliases);
-        var sql = $"SELECT {string.Join(", ", selections)} FROM {outerModel.StoreObjectName} AS {outerAlias} INNER JOIN {innerModel.StoreObjectName} AS {innerAlias} ON {onLeft} = {onRight}";
-
         var outerQuery = QueryModelFactory.Create(outerExpression);
         var innerQuery = QueryModelFactory.Create(innerExpression);
         EnsureJoinSourceShape(innerQuery, "inner");
+        var pagedOuter = outerQuery.Skip is not null || outerQuery.Take is not null;
+        var outerSource = pagedOuter
+            ? BuildPagedJoinOuter(outerExpression, outerModel, outerQuery, parameters, outerAlias)
+            : $"{outerModel.StoreObjectName} AS {outerAlias}";
+        var sql = $"SELECT {string.Join(", ", selections)} FROM {outerSource} INNER JOIN {innerModel.StoreObjectName} AS {innerAlias} ON {onLeft} = {onRight}";
         var predicates = new List<string>();
         if (innerQuery.Predicates.Count > 0)
         {
@@ -259,7 +384,7 @@ internal static class StructuredSqlBuilder
             predicates.AddRange(innerQuery.Predicates.Select(translator.TranslatePredicate));
         }
 
-        if (outerQuery.Predicates.Count > 0)
+        if (!pagedOuter && outerQuery.Predicates.Count > 0)
         {
             var translator = new SqlExpressionTranslator(outerModel, parameters, outerAlias);
             predicates.AddRange(outerQuery.Predicates.Select(translator.TranslatePredicate));
@@ -270,7 +395,10 @@ internal static class StructuredSqlBuilder
             sql += " WHERE " + string.Join(" AND ", predicates);
         }
 
-        AppendOrderAndLimit(outerModel, outerQuery, parameters, outerAlias, ref sql);
+        if (pagedOuter)
+            AppendJoinOuterOrder(outerModel, outerQuery, parameters, outerAlias, ref sql);
+        else
+            AppendOrderAndLimit(outerModel, outerQuery, parameters, outerAlias, ref sql);
 
         return new BoundSql(sql, parameters.Parameters);
     }
@@ -302,6 +430,10 @@ internal static class StructuredSqlBuilder
         var innerQuery = QueryModelFactory.Create(innerExpression);
         var outerQuery = QueryModelFactory.Create(outerExpression);
         EnsureJoinSourceShape(innerQuery, "inner");
+        var pagedOuter = outerQuery.Skip is not null || outerQuery.Take is not null;
+        var outerSource = pagedOuter
+            ? BuildPagedJoinOuter(outerExpression, outerModel, outerQuery, parameters, outerAlias)
+            : $"{outerModel.StoreObjectName} AS {outerAlias}";
         var joinConditions = new List<string> { $"{onLeft} = {onRight}" };
         if (innerQuery.Predicates.Count > 0)
         {
@@ -309,9 +441,12 @@ internal static class StructuredSqlBuilder
             joinConditions.AddRange(innerQuery.Predicates.Select(translator.TranslatePredicate));
         }
 
-        var sql = $"SELECT {string.Join(", ", selections)} FROM {outerModel.StoreObjectName} AS {outerAlias} LEFT JOIN {innerModel.StoreObjectName} AS {innerAlias} ON {string.Join(" AND ", joinConditions)}";
+        var sql = $"SELECT {string.Join(", ", selections)} FROM {outerSource} LEFT JOIN {innerModel.StoreObjectName} AS {innerAlias} ON {string.Join(" AND ", joinConditions)}";
 
-        AppendOuterJoinQuery(outerModel, outerQuery, parameters, outerAlias, ref sql);
+        if (pagedOuter)
+            AppendJoinOuterOrder(outerModel, outerQuery, parameters, outerAlias, ref sql);
+        else
+            AppendOuterJoinQuery(outerModel, outerQuery, parameters, outerAlias, ref sql);
 
         return new BoundSql(sql, parameters.Parameters);
     }
@@ -352,6 +487,45 @@ internal static class StructuredSqlBuilder
             throw new UnsupportedQueryExpressionException(
                 $"Join {sourceName} sources do not support OrderBy, ThenBy, Skip, or Take. Apply ordering or paging after the join.");
         }
+    }
+
+    private static string BuildPagedJoinOuter(Expression expression, EntityModel model, QueryModel query, ParameterBag parameters, string alias)
+    {
+        var sawSkip = false;
+        var sawTake = false;
+        var sawLaterOperation = false;
+        while (expression is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable))
+        {
+            switch (call.Method.Name)
+            {
+                case nameof(Queryable.Skip):
+                    if (sawSkip || sawLaterOperation) throw new UnsupportedQueryExpressionException("Unsupported operator order in paged join outer source.");
+                    sawSkip = true;
+                    break;
+                case nameof(Queryable.Take):
+                    if (sawTake || sawSkip || sawLaterOperation) throw new UnsupportedQueryExpressionException("Unsupported operator order in paged join outer source.");
+                    sawTake = true;
+                    break;
+                default:
+                    sawLaterOperation = true;
+                    break;
+            }
+            expression = call.Arguments[0];
+        }
+
+        const string innerAlias = "p";
+        var sql = $"SELECT {innerAlias}.* FROM {model.StoreObjectName} AS {innerAlias}";
+        AppendWhereAndOrder(model, query, parameters, innerAlias, ref sql);
+        AppendLimitOffset(query, parameters, ref sql);
+        return $"({sql}) AS {alias}";
+    }
+
+    private static void AppendJoinOuterOrder(EntityModel model, QueryModel query, ParameterBag parameters, string alias, ref string sql)
+    {
+        if (query.Orderings.Count == 0) return;
+        var translator = new SqlExpressionTranslator(model, parameters, alias);
+        sql += " ORDER BY " + string.Join(", ", query.Orderings.Select(o =>
+            translator.TranslateMember(o.KeySelector) + (o.Descending ? " DESC" : " ASC")));
     }
 
     private static BoundSql BuildGroupBy(MethodCallExpression groupBy, LambdaExpression selector)
@@ -416,26 +590,49 @@ internal static class StructuredSqlBuilder
 
     private static IReadOnlyList<string> ReadSelections(
         Expression body,
-        IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)> aliases)
+        IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)> aliases,
+        ParameterBag? parameters = null)
     {
         return ReadSelections(
             body,
             aliases,
-            new Dictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)>());
+            new Dictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)>(),
+            parameters);
+    }
+
+    private static IReadOnlyList<string> ReadNonNullableAggregateOutputs(Expression body)
+    {
+        IEnumerable<(string Name, Expression Value)> entries = body switch
+        {
+            NewExpression @new => @new.Arguments.Select((value, index) =>
+                (@new.Members?[index].Name ?? "value", value)),
+            MemberInitExpression init => init.Bindings.OfType<MemberAssignment>()
+                .Select(binding => (binding.Member.Name, binding.Expression)),
+            _ => Array.Empty<(string, Expression)>()
+        };
+
+        return entries
+            .Where(entry => StripConvert(entry.Value) is MethodCallExpression call &&
+                call.Method.DeclaringType == typeof(Queryable) &&
+                call.Method.Name is nameof(Queryable.Min) or nameof(Queryable.Max) or nameof(Queryable.Average) &&
+                Nullable.GetUnderlyingType(call.Type) is null)
+            .Select(entry => entry.Name)
+            .ToArray();
     }
 
     private static IReadOnlyList<string> ReadSelections(
         Expression body,
         IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)> aliases,
-        IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)> transparentAliases)
+        IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)> transparentAliases,
+        ParameterBag? parameters = null)
     {
         return body switch
         {
             NewExpression @new => @new.Arguments.Select((a, i) =>
-                Selection(a, @new.Members?[i].Name ?? "value", aliases, transparentAliases)).ToArray(),
+                Selection(a, @new.Members?[i].Name ?? "value", aliases, transparentAliases, parameters)).ToArray(),
             MemberInitExpression init => init.Bindings.OfType<MemberAssignment>()
-                .Select(b => Selection(b.Expression, b.Member.Name, aliases, transparentAliases)).ToArray(),
-            MemberExpression member => [Selection(member, member.Member.Name, aliases, transparentAliases)],
+                .Select(b => Selection(b.Expression, b.Member.Name, aliases, transparentAliases, parameters)).ToArray(),
+            MemberExpression member => [Selection(member, member.Member.Name, aliases, transparentAliases, parameters)],
             _ => throw new UnsupportedQueryExpressionException($"Projection expression '{body}' is not supported.")
         };
     }
@@ -444,16 +641,34 @@ internal static class StructuredSqlBuilder
         Expression expression,
         string outputName,
         IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)> aliases,
-        IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)>? transparentAliases = null)
+        IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)>? transparentAliases = null,
+        ParameterBag? parameters = null)
     {
-        return $"{TranslateMember(expression, aliases, transparentAliases)} AS {Identifier.Quote(outputName)}";
+        return $"{TranslateMember(expression, aliases, transparentAliases, parameters)} AS {Identifier.Quote(outputName)}";
     }
 
     private static string TranslateMember(
         Expression expression,
         IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)> aliases,
-        IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)>? transparentAliases = null)
+        IReadOnlyDictionary<(ParameterExpression Parameter, string MemberName), (EntityModel Model, string Alias)>? transparentAliases = null,
+        ParameterBag? parameters = null)
     {
+        expression = StripConvert(expression);
+        if (parameters is not null && aliases.Count > 0 && expression is MethodCallExpression call &&
+            call.Method.DeclaringType == typeof(Queryable) &&
+            call.Method.Name is nameof(Queryable.LongCount) or nameof(Queryable.Count) or nameof(Queryable.Sum)
+                or nameof(Queryable.Min) or nameof(Queryable.Max) or nameof(Queryable.Average))
+        {
+            var target = aliases.Values.First();
+            var translator = new SqlExpressionTranslator(
+                target.Model,
+                parameters,
+                target.Alias,
+                aliases,
+                allowNonNullableAggregateProjection: true);
+            return translator.TranslateScalar(expression);
+        }
+
         return TranslateSqlScalar(
             expression,
             member => ResolveMappedMemberSql(member, aliases, transparentAliases),
@@ -911,6 +1126,91 @@ internal static class StructuredSqlBuilder
         public int? Take { get; set; }
 
         public bool HasPostOperation => Predicates.Count > 0 || Orderings.Count > 0 || Skip is not null || Take is not null;
+
+        public bool HasDistinct { get; private set; }
+
+        public bool IsOnlyDistinct => HasDistinct && !HasPostOperation;
+
+        private bool HasPaging { get; set; }
+
+        private bool HasSkip { get; set; }
+
+        private bool HasTake { get; set; }
+
+        private bool HasPrimaryOrdering { get; set; }
+
+        public void AddPredicate(LambdaExpression predicate)
+        {
+            if (HasPaging)
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "Where after Skip or Take on a projection is not supported because it changes query semantics.");
+            }
+
+            Predicates.Add(predicate);
+        }
+
+        public void AddDistinct()
+        {
+            if (HasDistinct)
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "Multiple Distinct operations after a projection are not supported.");
+            }
+
+            if (HasPaging)
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "Distinct after Skip or Take on a projection is not supported because it changes query semantics.");
+            }
+
+            HasDistinct = true;
+        }
+
+        public void AddOrdering(LambdaExpression selector, bool descending, bool primary)
+        {
+            if (HasPaging)
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "OrderBy after Skip or Take on a projection is not supported because it changes query semantics.");
+            }
+
+            if (primary && HasPrimaryOrdering)
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "Multiple OrderBy operations after a projection are not supported; use ThenBy for secondary ordering.");
+            }
+
+            HasPrimaryOrdering |= primary;
+            Orderings.Add(new OrderingModel(selector, descending));
+        }
+
+        public void AddSkip(int value)
+        {
+            if (HasPaging || HasSkip)
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "Multiple or reordered Skip operations after a projection are not supported.");
+            }
+
+            HasPaging = true;
+            HasSkip = true;
+            Skip = value;
+        }
+
+        public void AddTake(int value)
+        {
+            if (HasTake || (HasPaging && !HasSkip))
+            {
+                throw new UnsupportedQueryExpressionException(
+                    "Multiple or reordered Take operations after a projection are not supported.");
+            }
+
+            HasPaging = true;
+            HasTake = true;
+            Take = value;
+        }
+
     }
 
     private sealed record GroupKeySql(
@@ -929,17 +1229,20 @@ internal static class StructuredSqlBuilder
         private readonly ParameterBag _parameters;
         private readonly string _alias;
         private readonly IReadOnlyDictionary<string, string>? _projectionSql;
+        private readonly string? _scalarProjectionName;
         private readonly Stack<string> _sql = new();
         private ParameterExpression? _projectionParameter;
 
         public ProjectedSqlExpressionTranslator(
             ParameterBag parameters,
             string alias = "g",
-            IReadOnlyDictionary<string, string>? projectionSql = null)
+            IReadOnlyDictionary<string, string>? projectionSql = null,
+            string? scalarProjectionName = null)
         {
             _parameters = parameters;
             _alias = alias;
             _projectionSql = projectionSql;
+            _scalarProjectionName = scalarProjectionName;
         }
 
         public string TranslatePredicate(LambdaExpression expression)
@@ -954,6 +1257,17 @@ internal static class StructuredSqlBuilder
             _projectionParameter = expression.Parameters[0];
             Visit(expression.Body);
             return _sql.Pop();
+        }
+
+        protected override Expression VisitParameter(ParameterExpression node)
+        {
+            if (node == _projectionParameter && _scalarProjectionName is not null)
+            {
+                _sql.Push($"{_alias}.{Identifier.Quote(_scalarProjectionName)}");
+                return node;
+            }
+
+            return base.VisitParameter(node);
         }
 
         protected override Expression VisitBinary(BinaryExpression node)
@@ -1014,6 +1328,18 @@ internal static class StructuredSqlBuilder
         {
             if (node.Expression == _projectionParameter)
             {
+                if (_scalarProjectionName is not null)
+                {
+                    if (node.Member.Name == "Length")
+                    {
+                        _sql.Push($"length({_alias}.{Identifier.Quote(_scalarProjectionName)})");
+                        return node;
+                    }
+
+                    throw new UnsupportedQueryExpressionException(
+                        $"Member '{node.Member.Name}' is not supported on a scalar projection.");
+                }
+
                 if (_projectionSql is not null && _projectionSql.TryGetValue(node.Member.Name, out var projectionSql))
                 {
                     _sql.Push(projectionSql);

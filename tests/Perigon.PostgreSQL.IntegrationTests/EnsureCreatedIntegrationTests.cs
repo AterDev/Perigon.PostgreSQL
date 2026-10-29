@@ -57,6 +57,19 @@ public sealed class EnsureCreatedIntegrationTests
     }
 
     [Fact]
+    public async Task Principal_side_relationship_creates_enforced_foreign_key()
+    {
+        var schema = _fixture.CreateIsolatedSchema("principal_fk");
+        await using var db = new PrincipalForeignKeyDbContext(_fixture.ConnectionString, schema);
+        await db.EnsureCreatedAsync();
+        var user = await db.Users.InsertAsync(new FluentForeignKeyUser { Name = "Author" });
+        await db.Posts.InsertAsync(new FluentForeignKeyPost { AuthorId = user.Id, Title = "Valid" });
+        var error = await Assert.ThrowsAsync<PostgresException>(() =>
+            db.Posts.InsertAsync(new FluentForeignKeyPost { AuthorId = -1, Title = "Invalid" }));
+        Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, error.SqlState);
+    }
+
+    [Fact]
     public async Task EnsureCreated_creates_tables_and_fluent_foreign_keys_with_constraint_name()
     {
         var schema = _fixture.CreateIsolatedSchema("fluent_fk");
@@ -169,6 +182,24 @@ public sealed class EnsureCreatedBlog
     public int EnsureCreatedUserId { get; set; }
 
     public string Name { get; set; } = "";
+}
+
+public sealed class PrincipalForeignKeyDbContext : DbContext
+{
+    private readonly string _schema;
+    public PrincipalForeignKeyDbContext(string connectionString, string schema) : base(builder => builder.UsePostgres(connectionString)) => _schema = schema;
+    public DbSet<FluentForeignKeyUser> Users => Set<FluentForeignKeyUser>();
+    public DbSet<FluentForeignKeyPost> Posts => Set<FluentForeignKeyPost>();
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<FluentForeignKeyUser>(entity =>
+        {
+            entity.ToTable("fluent_users", _schema);
+            entity.HasMany(user => user.Posts).WithOne(post => post.Author)
+                .HasForeignKey(post => post.AuthorId).HasConstraintName("fk_principal_author");
+        });
+        modelBuilder.Entity<FluentForeignKeyPost>(entity => entity.ToTable("fluent_posts", _schema));
+    }
 }
 
 public sealed class FluentForeignKeyDbContext : DbContext

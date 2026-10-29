@@ -9,7 +9,7 @@
     <ToolCommandName>dotnet-perigon</ToolCommandName>
     <PackageId>Perigon.PostgreSQL.Tools</PackageId>
     <Title>Perigon.PostgreSQL.Tools</Title>
-    <Version>0.1.8</Version>
+    <Version>0.2.0</Version>
     <Description>Command line tools for Perigon.PostgreSQL migrations, reverse engineering, and scaffolding.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>

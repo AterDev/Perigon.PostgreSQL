@@ -8,6 +8,165 @@ namespace Perigon.PostgreSQL.Tests.SourceGeneration;
 public sealed class EntityModelGeneratorTests
 {
     [Fact]
+    public void Generator_registers_convention_foreign_keys_without_reflection()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            using System.Collections.Generic;
+
+            namespace Demo;
+
+            public sealed class DemoDbContext : DbContext
+            {
+                public DemoDbContext() : base(_ => { }) { }
+                public DbSet<User> Users => Set<User>();
+                public DbSet<Blog> Blogs => Set<Blog>();
+            }
+
+            public sealed class User
+            {
+                public int Id { get; set; }
+                public List<Blog> Blogs { get; set; } = new();
+            }
+
+            public sealed class Blog
+            {
+                public int Id { get; set; }
+                public int UserId { get; set; }
+                public User User { get; set; } = null!;
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("EntityModelRegistry.RegisterGeneratedForeignKey<global::Demo.Blog, global::Demo.User>", generated);
+        Assert.Contains("\"UserId\", \"Id\"", generated);
+        Assert.Contains("NavigationIncludeRegistry.Register<global::Demo.Blog>", generated);
+        Assert.Contains("LoadReferenceAsync<global::Demo.Blog, global::Demo.User, int>", generated);
+        Assert.Contains("dependent.User = principal!", generated);
+        Assert.Contains("\"User\", navigationExpression, static (dependent, principal)", generated);
+        Assert.Contains("NavigationIncludeRegistry.Register<global::Demo.User>", generated);
+        Assert.Contains("LoadCollectionAsync<global::Demo.User, global::Demo.Blog, int>", generated);
+    }
+
+    [Fact]
+    public void Generator_scopes_conventions_to_each_context_and_honors_foreign_key_attribute()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            using System.ComponentModel.DataAnnotations.Schema;
+
+            namespace First
+            {
+            public sealed class FirstContext : DbContext
+            {
+                public FirstContext() : base(_ => { }) { }
+                public DbSet<User> Users => Set<User>();
+                public DbSet<Blog> Blogs => Set<Blog>();
+            }
+            public sealed class User { public int Id { get; set; } }
+            public sealed class Blog { public int Id { get; set; } public int UserId { get; set; } }
+            }
+
+            namespace Second
+            {
+            public sealed class SecondContext : DbContext
+            {
+                public SecondContext() : base(_ => { }) { }
+                public DbSet<User> Users => Set<User>();
+                public DbSet<Blog> Blogs => Set<Blog>();
+            }
+            public sealed class User { public int Id { get; set; } }
+            public sealed class Blog { public int Id { get; set; } public int UserId { get; set; } }
+            }
+
+            namespace Explicit
+            {
+            public sealed class ExplicitContext : DbContext
+            {
+                public ExplicitContext() : base(_ => { }) { }
+                public DbSet<User> Users => Set<User>();
+                public DbSet<Owner> Owners => Set<Owner>();
+                public DbSet<Blog> Blogs => Set<Blog>();
+            }
+            public sealed class User { public int Id { get; set; } }
+            public sealed class Owner { public int Id { get; set; } }
+            public sealed class Blog
+            {
+                public int Id { get; set; }
+                public int UserId { get; set; }
+                [ForeignKey(nameof(UserId))]
+                public Owner? Owner { get; set; }
+            }
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("RegisterGeneratedForeignKey<global::First.Blog, global::First.User>", generated);
+        Assert.Contains("RegisterGeneratedForeignKey<global::Second.Blog, global::Second.User>", generated);
+        Assert.DoesNotContain("RegisterGeneratedForeignKey<global::First.Blog, global::Second.User>", generated);
+        Assert.Contains("RegisterGeneratedForeignKey<global::Explicit.Blog, global::Explicit.Owner>", generated);
+        Assert.DoesNotContain("RegisterGeneratedForeignKey<global::Explicit.Blog, global::Explicit.User>", generated);
+    }
+
+    [Fact]
+    public void Generator_does_not_globalize_relationships_for_entities_shared_by_contexts()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            namespace Shared;
+            public sealed class FirstContext : DbContext
+            {
+                public FirstContext() : base(_ => { }) { }
+                public DbSet<User> Users => Set<User>();
+                public DbSet<Blog> Blogs => Set<Blog>();
+            }
+            public sealed class SecondContext : DbContext
+            {
+                public SecondContext() : base(_ => { }) { }
+                public DbSet<User> Users => Set<User>();
+                public DbSet<Blog> Blogs => Set<Blog>();
+            }
+            public sealed class User { public int Id { get; set; } }
+            public sealed class Blog { public int Id { get; set; } public int UserId { get; set; } }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain("RegisterGeneratedForeignKey<global::Shared.Blog, global::Shared.User>", generated);
+    }
+
+    [Fact]
+    public void Generator_uses_non_nullable_principal_key_for_nullable_foreign_key_loader()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            namespace NullableFk;
+            public sealed class DemoContext : DbContext
+            {
+                public DemoContext() : base(_ => { }) { }
+                public DbSet<User> Users => Set<User>();
+                public DbSet<Blog> Blogs => Set<Blog>();
+            }
+            public sealed class User { public int Id { get; set; } }
+            public sealed class Blog
+            {
+                public int Id { get; set; }
+                public int? UserId { get; set; }
+                public User? User { get; set; }
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("LoadReferenceAsync<global::NullableFk.Blog, global::NullableFk.User, int>", generated);
+    }
+
+    [Fact]
     public void Generator_registers_migrations_without_dbsets_in_stable_id_order()
     {
         const string source = """

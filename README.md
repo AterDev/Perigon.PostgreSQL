@@ -94,6 +94,41 @@ var inserted = await db.Users.InsertAsync(new User
 });
 ```
 
+## 关系与 Include
+
+关系元数据可以使用命名约定、`[ForeignKey]` 或 Fluent API 配置。源生成器会为同一
+`DbContext` 中可静态识别的单列关系注册 AOT 安全的导航 loader；导航属性应标记
+`[NotMapped]`，集合导航当前使用 `List<T>`，并且必须有公开 setter。
+
+```csharp
+public sealed class Blog
+{
+    public int Id { get; set; }
+    public int UserId { get; set; }
+    [NotMapped]
+    public User? User { get; set; }
+}
+
+public sealed class User
+{
+    public int Id { get; set; }
+    [NotMapped]
+    public List<Blog> Blogs { get; set; } = [];
+}
+
+var users = await db.Users
+    .Include(user => user.Blogs.Where(blog => blog.Id > 0)
+        .OrderBy(blog => blog.Id).Take(10))
+    .ToListAsync();
+```
+
+`Include` 目前是单层 split query，支持直接引用或一对多集合的筛选、排序和分页；
+`ThenInclude`、多对多导航自动填充、复合键导航 loader 和 `AsSingleQuery` 尚未支持。
+显式多对多关系可通过 `HasMany().WithMany().UsingEntity<TJoin>(...)` 生成两条外键，
+或使用 `IncludeAsync`/`IncludeManyToManyAsync` 通过键 selector 组装结果。仅在
+`OnModelCreating` 中配置且无法被源生成器识别的关系仍可用于 DDL，但不会自动生成
+导航 Include loader。
+
 ## 从现有 PostgreSQL 数据库反向生成代码
 
 安装工具：

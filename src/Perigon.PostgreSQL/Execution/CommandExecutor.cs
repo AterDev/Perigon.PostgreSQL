@@ -47,12 +47,14 @@ internal static class CommandExecutor
             await using var command = context.CreateCommand(sql);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             var results = new List<T>();
+            var nonNullableAggregateOrdinals = ResolveNonNullableAggregateOrdinals(reader, sql);
             if (EntityMaterializerRegistry.TryGetFactory<T>(out var generatedFactory) &&
                 (model is null || CanUseGeneratedMaterializer<T>(model)))
             {
                 var resultMaterializer = generatedFactory(reader);
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
+                    EnsureNonNullableAggregates(reader, nonNullableAggregateOrdinals);
                     results.Add(resultMaterializer(reader));
                 }
 
@@ -65,6 +67,7 @@ internal static class CommandExecutor
             {
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
+                    EnsureNonNullableAggregates(reader, nonNullableAggregateOrdinals);
                     results.Add(generatedMaterializer(reader));
                 }
 
@@ -76,6 +79,7 @@ internal static class CommandExecutor
             var ordinals = BuildOrdinals(reader, model);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                EnsureNonNullableAggregates(reader, nonNullableAggregateOrdinals);
                 var entity = new T();
                 foreach (var (column, ordinal) in ordinals)
                 {
@@ -98,6 +102,27 @@ internal static class CommandExecutor
         {
             LogFailed(context, sql, stopwatch, exception);
             throw;
+        }
+    }
+
+    private static int[] ResolveNonNullableAggregateOrdinals(NpgsqlDataReader reader, BoundSql sql)
+    {
+        if (sql.NonNullableAggregateColumns.Count == 0)
+        {
+            return Array.Empty<int>();
+        }
+
+        return sql.NonNullableAggregateColumns.Select(reader.GetOrdinal).ToArray();
+    }
+
+    private static void EnsureNonNullableAggregates(NpgsqlDataReader reader, IReadOnlyList<int> ordinals)
+    {
+        foreach (var ordinal in ordinals)
+        {
+            if (reader.IsDBNull(ordinal))
+            {
+                throw new InvalidOperationException("Sequence contains no elements.");
+            }
         }
     }
 

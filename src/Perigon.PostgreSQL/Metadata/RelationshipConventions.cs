@@ -31,7 +31,7 @@ internal static class RelationshipConventions
                     continue;
                 }
 
-                if (result.Any(existing => existing.DependentEntity == dependent && existing.DependentColumn == column))
+                if (HasForeignKey(result, dependent, column))
                 {
                     continue;
                 }
@@ -91,7 +91,7 @@ internal static class RelationshipConventions
                 continue;
             }
 
-            if (result.Any(existing => existing.DependentEntity == dependent && existing.DependentColumn == dependentColumn))
+            if (HasForeignKey(result, dependent, dependentColumn))
             {
                 continue;
             }
@@ -113,5 +113,16 @@ internal static class RelationshipConventions
     private static string DefaultForeignKeyName(EntityModel dependent, ColumnModel column)
     {
         return "fk_" + dependent.TableName + "_" + column.ColumnName;
+    }
+
+    private static bool HasForeignKey(
+        IReadOnlyList<ForeignKeyModel> foreignKeys,
+        EntityModel dependent,
+        ColumnModel dependentColumn)
+    {
+        return foreignKeys.Any(existing =>
+            existing.DependentEntity.ClrType == dependent.ClrType &&
+            existing.DependentColumns.Count == 1 &&
+            existing.DependentColumn.PropertyName == dependentColumn.PropertyName);
     }
 }

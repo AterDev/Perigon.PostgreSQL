@@ -10,7 +10,7 @@ public sealed class ModelBuilder
     public EntityTypeBuilder<TEntity> Entity<TEntity>()
         where TEntity : class
     {
-        return new EntityTypeBuilder<TEntity>(GetOrAddConfiguration(typeof(TEntity)));
+        return new EntityTypeBuilder<TEntity>(this, GetOrAddConfiguration(typeof(TEntity)));
     }
 
     public EntityTypeBuilder<TEntity> Entity<TEntity>(Action<EntityTypeBuilder<TEntity>> configure)
@@ -53,12 +53,15 @@ public sealed class ModelBuilder
             configured.Add(model.Apply(configuration.Schema, configuration.TableName, columns, configuration.Comment, indexes, foreignKeys: null));
         }
 
+        var configuredByType = configured.ToDictionary(model => model.ClrType, model => model);
+        configured = RebindForeignKeys(configured, configuredByType);
+
         if (_configurations.Values.All(static configuration => configuration.Relationships.Count == 0))
         {
             return configured;
         }
 
-        var configuredByType = configured.ToDictionary(model => model.ClrType, model => model);
+        configuredByType = configured.ToDictionary(model => model.ClrType, model => model);
         var explicitForeignKeys = new Dictionary<Type, List<ForeignKeyModel>>();
         foreach (var configuration in _configurations.Values)
         {
@@ -100,7 +103,9 @@ public sealed class ModelBuilder
                     dependentColumns,
                     principal,
                     principal.PrimaryKeys,
-                    relationship.OnDelete));
+                    relationship.OnDelete,
+                    relationship.DependentNavigationName,
+                    relationship.PrincipalNavigationName));
             }
         }
 
@@ -118,7 +123,68 @@ public sealed class ModelBuilder
             .ToArray();
     }
 
-    private EntityConfiguration GetOrAddConfiguration(Type entityType)
+    private static List<EntityModel> RebindForeignKeys(
+        IReadOnlyList<EntityModel> models,
+        IReadOnlyDictionary<Type, EntityModel> configuredByType)
+    {
+        var rebound = new List<EntityModel>(models.Count);
+        foreach (var model in models)
+        {
+            if (model.ForeignKeys.Count == 0)
+            {
+                rebound.Add(model);
+                continue;
+            }
+
+            var foreignKeys = new List<ForeignKeyModel>(model.ForeignKeys.Count);
+            foreach (var foreignKey in model.ForeignKeys)
+            {
+                if (!configuredByType.TryGetValue(foreignKey.DependentEntity.ClrType, out var dependent) ||
+                    !configuredByType.TryGetValue(foreignKey.PrincipalEntity.ClrType, out var principal))
+                {
+                    continue;
+                }
+
+                var dependentColumns = foreignKey.DependentColumns.Select(column => dependent.GetColumn(column.PropertyName)).ToArray();
+                var principalColumns = foreignKey.PrincipalColumns
+                    .Select(column => principal.GetColumn(column.PropertyName))
+                    .ToArray();
+                if (principalColumns.Length == 1 &&
+                    !principalColumns[0].IsPrimaryKey &&
+                    principal.PrimaryKeys.Count == 1)
+                {
+                    principalColumns = [principal.PrimaryKeys[0]];
+                }
+                foreignKeys.Add(new ForeignKeyModel(
+                    foreignKey.ConstraintName,
+                    dependent,
+                    dependentColumns,
+                    principal,
+                    principalColumns,
+                    foreignKey.OnDelete,
+                    foreignKey.DependentNavigationName,
+                    foreignKey.PrincipalNavigationName));
+            }
+
+            rebound.Add(model.Apply(
+                model.Schema,
+                model.TableName,
+                model.Columns,
+                model.Comment,
+                model.Indexes.Select(static index => new IndexDefinition(
+                    index.IndexName,
+                    index.Columns.Select(static column => column.PropertyName).ToArray(),
+                    index.IsUnique,
+                    index.IncludeColumns.Select(static column => column.PropertyName).ToArray(),
+                    index.Filter,
+                    index.Method)).ToArray(),
+                foreignKeys));
+        }
+
+        return rebound;
+    }
+
+    internal EntityConfiguration GetOrAddConfiguration(Type entityType)
     {
         if (_configurations.TryGetValue(entityType, out var configuration))
         {
@@ -128,6 +194,17 @@ public sealed class ModelBuilder
         configuration = new EntityConfiguration(entityType);
         _configurations[entityType] = configuration;
         return configuration;
+    }
+
+    internal void RemoveRelationship(RelationshipConfiguration relationship)
+    {
+        foreach (var configuration in _configurations.Values)
+        {
+            if (configuration.Relationships.Remove(relationship))
+            {
+                return;
+            }
+        }
     }
 
     private static IReadOnlyList<IndexDefinition> MergeIndexes(EntityModel model, EntityConfiguration configuration)
@@ -175,9 +252,11 @@ public sealed class EntityTypeBuilder<TEntity>
     where TEntity : class
 {
     private readonly EntityConfiguration _configuration;
+    private readonly ModelBuilder _modelBuilder;
 
-    internal EntityTypeBuilder(EntityConfiguration configuration)
+    internal EntityTypeBuilder(ModelBuilder modelBuilder, EntityConfiguration configuration)
     {
+        _modelBuilder = modelBuilder;
         _configuration = configuration;
     }
 
@@ -221,6 +300,20 @@ public sealed class EntityTypeBuilder<TEntity>
         where TRelated : class
     {
         return new ReferenceNavigationBuilder<TEntity, TRelated>(_configuration.AddRelationship(typeof(TRelated), navigationName: null));
+    }
+
+    public CollectionNavigationBuilder<TEntity, TRelated> HasMany<TRelated>(Expression<Func<TEntity, IEnumerable<TRelated>>> expression)
+        where TRelated : class
+    {
+        var relationship = _modelBuilder.GetOrAddConfiguration(typeof(TRelated)).AddRelationship(typeof(TEntity), navigationName: null);
+        relationship.PrincipalNavigationName = ExpressionHelpers.TryReadSingleProperty(expression);
+        return new CollectionNavigationBuilder<TEntity, TRelated>(_modelBuilder, relationship);
+    }
+
+    public CollectionNavigationBuilder<TEntity, TRelated> HasMany<TRelated>() where TRelated : class
+    {
+        var relationship = _modelBuilder.GetOrAddConfiguration(typeof(TRelated)).AddRelationship(typeof(TEntity), navigationName: null);
+        return new CollectionNavigationBuilder<TEntity, TRelated>(_modelBuilder, relationship);
     }
 }
 
@@ -328,6 +421,71 @@ public sealed class IndexBuilder<TEntity>
     {
         _configuration.Method = method;
         return this;
+    }
+}
+
+public sealed class CollectionNavigationBuilder<TPrincipal, TDependent>
+    where TPrincipal : class
+    where TDependent : class
+{
+    private readonly RelationshipConfiguration _configuration;
+    private readonly ModelBuilder _modelBuilder;
+
+    internal CollectionNavigationBuilder(ModelBuilder modelBuilder, RelationshipConfiguration configuration)
+    {
+        _modelBuilder = modelBuilder;
+        _configuration = configuration;
+    }
+
+    public ReferenceCollectionBuilder<TDependent, TPrincipal> WithOne(Expression<Func<TDependent, TPrincipal?>> expression)
+    {
+        _configuration.DependentNavigationName = ExpressionHelpers.TryReadSingleProperty(expression);
+        return new ReferenceCollectionBuilder<TDependent, TPrincipal>(_configuration);
+    }
+
+    public ReferenceCollectionBuilder<TDependent, TPrincipal> WithOne() => new(_configuration);
+
+    public ManyToManyNavigationBuilder<TPrincipal, TDependent> WithMany()
+    {
+        _modelBuilder.RemoveRelationship(_configuration);
+        return new ManyToManyNavigationBuilder<TPrincipal, TDependent>(_modelBuilder);
+    }
+
+    public ManyToManyNavigationBuilder<TPrincipal, TDependent> WithMany(
+        Expression<Func<TDependent, IEnumerable<TPrincipal>>> expression)
+    {
+        _configuration.PrincipalNavigationName = ExpressionHelpers.TryReadSingleProperty(expression);
+        _modelBuilder.RemoveRelationship(_configuration);
+        return new ManyToManyNavigationBuilder<TPrincipal, TDependent>(_modelBuilder);
+    }
+}
+
+public sealed class ManyToManyNavigationBuilder<TPrincipal, TRelated>
+    where TPrincipal : class
+    where TRelated : class
+{
+    private readonly ModelBuilder _modelBuilder;
+
+    internal ManyToManyNavigationBuilder(ModelBuilder modelBuilder)
+    {
+        _modelBuilder = modelBuilder;
+    }
+
+    public EntityTypeBuilder<TJoin> UsingEntity<TJoin>(
+        Expression<Func<TJoin, TPrincipal?>> principalNavigation,
+        Expression<Func<TJoin, TRelated?>> relatedNavigation,
+        Expression<Func<TJoin, object?>> principalForeignKey,
+        Expression<Func<TJoin, object?>> relatedForeignKey)
+        where TJoin : class
+    {
+        var join = _modelBuilder.Entity<TJoin>();
+        join.HasOne(principalNavigation)
+            .WithMany()
+            .HasForeignKey(principalForeignKey);
+        join.HasOne(relatedNavigation)
+            .WithMany()
+            .HasForeignKey(relatedForeignKey);
+        return join;
     }
 }
 

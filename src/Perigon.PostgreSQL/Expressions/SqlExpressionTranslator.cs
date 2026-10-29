@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Diagnostics;
 using System.Linq.Expressions;
+using Perigon.PostgreSQL.Query;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Sql;
 
@@ -11,14 +12,26 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
     private readonly EntityModel _model;
     private readonly ParameterBag _parameters;
     private readonly string _alias;
+    private readonly IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)>? _correlatedAliases;
+    private readonly bool _useCSharpNullSemantics;
+    private readonly bool _allowNonNullableAggregateProjection;
     private readonly Stack<string> _sql = new();
     private ParameterExpression? _entityParameter;
 
-    public SqlExpressionTranslator(EntityModel model, ParameterBag parameters, string alias)
+    public SqlExpressionTranslator(
+        EntityModel model,
+        ParameterBag parameters,
+        string alias,
+        IReadOnlyDictionary<ParameterExpression, (EntityModel Model, string Alias)>? correlatedAliases = null,
+        bool useCSharpNullSemantics = false,
+        bool allowNonNullableAggregateProjection = false)
     {
         _model = model;
         _parameters = parameters;
         _alias = alias;
+        _correlatedAliases = correlatedAliases;
+        _useCSharpNullSemantics = useCSharpNullSemantics;
+        _allowNonNullableAggregateProjection = allowNonNullableAggregateProjection;
     }
 
     public string TranslatePredicate(LambdaExpression expression)
@@ -35,6 +48,12 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
         return _sql.Pop();
     }
 
+    public string TranslateScalar(Expression expression)
+    {
+        Visit(expression);
+        return _sql.Pop();
+    }
+
     protected override Expression VisitBinary(BinaryExpression node)
     {
         if (node.NodeType is ExpressionType.AndAlso or ExpressionType.OrElse)
@@ -47,7 +66,8 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             return node;
         }
 
-        if (IsNullConstant(node.Right) || TryReadNonEntityNull(node.Right))
+        if ((!_useCSharpNullSemantics || node.NodeType is ExpressionType.Equal or ExpressionType.NotEqual) &&
+            (IsNullConstant(node.Right) || TryReadNonEntityNull(node.Right)))
         {
             Visit(node.Left);
             var left = _sql.Pop();
@@ -55,7 +75,8 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             return node;
         }
 
-        if (IsNullConstant(node.Left) || TryReadNonEntityNull(node.Left))
+        if ((!_useCSharpNullSemantics || node.NodeType is ExpressionType.Equal or ExpressionType.NotEqual) &&
+            (IsNullConstant(node.Left) || TryReadNonEntityNull(node.Left)))
         {
             Visit(node.Right);
             var right = _sql.Pop();
@@ -63,11 +84,26 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             return node;
         }
 
+        if (_useCSharpNullSemantics && node.NodeType is ExpressionType.Equal or ExpressionType.NotEqual)
+        {
+            Visit(node.Left);
+            var left = _sql.Pop();
+            Visit(node.Right);
+            var right = _sql.Pop();
+            _sql.Push($"({left} {(node.NodeType == ExpressionType.Equal ? "IS NOT DISTINCT FROM" : "IS DISTINCT FROM")} {right})");
+            return node;
+        }
+
         Visit(node.Left);
         var sqlLeft = _sql.Pop();
         Visit(node.Right);
         var sqlRight = _sql.Pop();
-        _sql.Push($"({sqlLeft} {Operator(node.NodeType)} {sqlRight})");
+        var comparison = $"({sqlLeft} {Operator(node.NodeType)} {sqlRight})";
+        _sql.Push(_useCSharpNullSemantics && node.NodeType is
+            ExpressionType.GreaterThan or ExpressionType.GreaterThanOrEqual or
+            ExpressionType.LessThan or ExpressionType.LessThanOrEqual
+            ? $"COALESCE({comparison}, FALSE)"
+            : comparison);
         return node;
     }
 
@@ -76,7 +112,10 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
         if (node.NodeType == ExpressionType.Not)
         {
             Visit(node.Operand);
-            _sql.Push($"NOT ({_sql.Pop()})");
+            var operand = _sql.Pop();
+            _sql.Push(_useCSharpNullSemantics
+                ? $"NOT (COALESCE({operand}, FALSE))"
+                : $"NOT ({operand})");
             return node;
         }
 
@@ -102,6 +141,15 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
         {
             var column = _model.GetColumn(node.Member.Name);
             _sql.Push($"{_alias}.{Identifier.Quote(column.ColumnName)}");
+            return node;
+        }
+
+        if (node.Expression is ParameterExpression correlatedParameter &&
+            _correlatedAliases is not null &&
+            _correlatedAliases.TryGetValue(correlatedParameter, out var correlated))
+        {
+            var column = correlated.Model.GetColumn(node.Member.Name);
+            _sql.Push($"{correlated.Alias}.{Identifier.Quote(column.ColumnName)}");
             return node;
         }
 
@@ -261,6 +309,42 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             return VisitEnumerableAll(node);
         }
 
+        if (node.Method.DeclaringType == typeof(Queryable) &&
+            node.Method.Name == nameof(Queryable.Any))
+        {
+            return VisitQueryableAny(node);
+        }
+
+        if (node.Method.DeclaringType == typeof(Queryable) &&
+            node.Method.Name == nameof(Queryable.LongCount))
+        {
+            return VisitQueryableCount(node, castToInteger: false);
+        }
+
+        if (node.Method.DeclaringType == typeof(Queryable) &&
+            node.Method.Name == nameof(Queryable.Count))
+        {
+            return VisitQueryableCount(node, castToInteger: true);
+        }
+
+        if (node.Method.DeclaringType == typeof(Queryable) &&
+            node.Method.Name == nameof(Queryable.Sum))
+        {
+            return VisitQueryableSum(node);
+        }
+
+        if (node.Method.DeclaringType == typeof(Queryable) &&
+            node.Method.Name is nameof(Queryable.Min) or nameof(Queryable.Max) or nameof(Queryable.Average))
+        {
+            return VisitQueryableNullableAggregate(node);
+        }
+
+        if (node.Method.DeclaringType == typeof(Queryable) &&
+            node.Method.Name == nameof(Queryable.All))
+        {
+            return VisitQueryableAll(node);
+        }
+
         if (node.Method.Name is "ContainsAll" or "Overlaps" or "IsContainedBy")
         {
             var source = node.Object ?? node.Arguments[0];
@@ -415,6 +499,431 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             ?? throw new UnsupportedQueryExpressionException("Array All predicate must compare the element to a value.");
         _sql.Push($"({column} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest({column}) AS p(\"value\") WHERE p.\"value\" IS DISTINCT FROM {_parameters.Add(ExpressionValueReader.Read(valueExpression))}))");
         return node;
+    }
+
+    private Expression VisitQueryableAny(MethodCallExpression node)
+    {
+        if (node.Arguments.Count is < 1 or > 2)
+        {
+            throw new UnsupportedQueryExpressionException("Queryable Any requires a query source and optional predicate.");
+        }
+
+        var source = RewriteCapturedQueryableRoots(node.Arguments[0]);
+        source = ResolveQueryableExpression(source);
+        var model = ResolveQueryModel(source);
+        var query = QueryModelFactory.Create(source);
+        if (query.Orderings.Count > 0 || query.Skip is not null || query.Take is not null)
+        {
+            throw new UnsupportedQueryExpressionException(
+                "Queryable Any subqueries do not support ordering or paging.");
+        }
+
+        var aliases = new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>();
+        if (_entityParameter is not null)
+        {
+            aliases[_entityParameter] = (_model, _alias);
+        }
+
+        if (_correlatedAliases is not null)
+        {
+            foreach (var pair in _correlatedAliases)
+            {
+                aliases[pair.Key] = pair.Value;
+            }
+        }
+
+        var subqueryAlias = _alias == "e" ? "s" : _alias + "s";
+        var predicates = new List<string>();
+        foreach (var predicate in query.Predicates)
+        {
+            var innerTranslator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+            predicates.Add(innerTranslator.TranslatePredicate(predicate));
+        }
+
+        if (node.Arguments.Count == 2)
+        {
+            var predicate = UnquoteLambda(node.Arguments[1]);
+            var innerTranslator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+            predicates.Add(innerTranslator.TranslatePredicate(predicate));
+        }
+
+        var sql = $"EXISTS (SELECT 1 FROM {model.StoreObjectName} AS {subqueryAlias}";
+        if (predicates.Count > 0)
+        {
+            sql += " WHERE " + string.Join(" AND ", predicates);
+        }
+
+        _sql.Push(sql + ")");
+        return node;
+    }
+
+    private Expression VisitQueryableAll(MethodCallExpression node)
+    {
+        if (node.Arguments.Count != 2)
+        {
+            throw new UnsupportedQueryExpressionException("Queryable All requires a query source and predicate.");
+        }
+
+        var source = RewriteCapturedQueryableRoots(node.Arguments[0]);
+        source = ResolveQueryableExpression(source);
+        var model = ResolveQueryModel(source);
+        var query = QueryModelFactory.Create(source);
+        if (query.Orderings.Count > 0 || query.Skip is not null || query.Take is not null)
+        {
+            throw new UnsupportedQueryExpressionException(
+                "Queryable All subqueries do not support ordering or paging.");
+        }
+
+        var aliases = new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>();
+        if (_entityParameter is not null)
+        {
+            aliases[_entityParameter] = (_model, _alias);
+        }
+
+        if (_correlatedAliases is not null)
+        {
+            foreach (var pair in _correlatedAliases)
+            {
+                aliases[pair.Key] = pair.Value;
+            }
+        }
+
+        var subqueryAlias = _alias == "e" ? "s" : _alias + "s";
+        var conditions = new List<string>();
+        foreach (var predicate in query.Predicates)
+        {
+            var innerTranslator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+            conditions.Add(innerTranslator.TranslatePredicate(predicate));
+        }
+
+        var allPredicate = UnquoteLambda(node.Arguments[1]);
+        var predicateTranslator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+        var predicateSql = predicateTranslator.TranslatePredicate(allPredicate);
+        // IS NOT TRUE preserves C# All semantics for nullable SQL predicates:
+        // both FALSE and NULL violate the universal predicate.
+        conditions.Add($"({predicateSql}) IS NOT TRUE");
+
+        var sql = $"NOT EXISTS (SELECT 1 FROM {model.StoreObjectName} AS {subqueryAlias} WHERE {string.Join(" AND ", conditions)})";
+        _sql.Push(sql);
+        return node;
+    }
+
+    private Expression VisitQueryableCount(MethodCallExpression node, bool castToInteger)
+    {
+        if (node.Arguments.Count is < 1 or > 2)
+        {
+            throw new UnsupportedQueryExpressionException("Queryable LongCount requires a query source and optional predicate.");
+        }
+
+        var source = RewriteCapturedQueryableRoots(node.Arguments[0]);
+        source = ResolveQueryableExpression(source);
+        var model = ResolveQueryModel(source);
+        var query = QueryModelFactory.Create(source);
+        if (query.Orderings.Count > 0 || query.Skip is not null || query.Take is not null)
+        {
+            throw new UnsupportedQueryExpressionException(
+                "Queryable LongCount subqueries do not support ordering or paging.");
+        }
+
+        var aliases = new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>();
+        if (_entityParameter is not null)
+        {
+            aliases[_entityParameter] = (_model, _alias);
+        }
+
+        if (_correlatedAliases is not null)
+        {
+            foreach (var pair in _correlatedAliases)
+            {
+                aliases[pair.Key] = pair.Value;
+            }
+        }
+
+        var subqueryAlias = _alias == "e" ? "s" : _alias + "s";
+        var predicates = new List<string>();
+        foreach (var predicate in query.Predicates)
+        {
+            var translator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+            predicates.Add(translator.TranslatePredicate(predicate));
+        }
+
+        if (node.Arguments.Count == 2)
+        {
+            var predicate = UnquoteLambda(node.Arguments[1]);
+            var translator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+            predicates.Add(translator.TranslatePredicate(predicate));
+        }
+
+        var countSql = castToInteger ? "count(*)::integer" : "count(*)";
+        var sql = $"(SELECT {countSql} FROM {model.StoreObjectName} AS {subqueryAlias}";
+        if (predicates.Count > 0)
+        {
+            sql += " WHERE " + string.Join(" AND ", predicates);
+        }
+
+        _sql.Push(sql + ")");
+        return node;
+    }
+
+    private Expression VisitQueryableSum(MethodCallExpression node)
+    {
+        if (node.Arguments.Count != 2)
+        {
+            throw new UnsupportedQueryExpressionException(
+                "Queryable Sum subqueries require a source and a scalar selector.");
+        }
+
+        var source = RewriteCapturedQueryableRoots(node.Arguments[0]);
+        source = ResolveQueryableExpression(source);
+        var model = ResolveQueryModel(source);
+        var query = QueryModelFactory.Create(source);
+        if (query.Orderings.Count > 0 || query.Skip is not null || query.Take is not null)
+        {
+            throw new UnsupportedQueryExpressionException(
+                "Queryable Sum subqueries do not support ordering or paging.");
+        }
+
+        var aliases = new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>();
+        if (_entityParameter is not null)
+        {
+            aliases[_entityParameter] = (_model, _alias);
+        }
+
+        if (_correlatedAliases is not null)
+        {
+            foreach (var pair in _correlatedAliases)
+            {
+                aliases[pair.Key] = pair.Value;
+            }
+        }
+
+        var subqueryAlias = _alias == "e" ? "s" : _alias + "s";
+        var selector = UnquoteLambda(node.Arguments[1]);
+        EnsureNoNullableValueDereference(node.Method.Name, selector.Body);
+
+        aliases[selector.Parameters[0]] = (model, subqueryAlias);
+        var selectorTranslator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+        var selectorSql = selectorTranslator.TranslateScalar(selector.Body);
+        var predicates = new List<string>();
+        foreach (var predicate in query.Predicates)
+        {
+            var translator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+            predicates.Add(translator.TranslatePredicate(predicate));
+        }
+
+        var sumSql = $"COALESCE(sum({selectorSql}), 0)";
+        var resultType = Nullable.GetUnderlyingType(node.Type) ?? node.Type;
+        if (resultType == typeof(int))
+        {
+            sumSql += "::int";
+        }
+        else if (resultType == typeof(long))
+        {
+            sumSql += "::bigint";
+        }
+
+        var sql = $"(SELECT {sumSql} FROM {model.StoreObjectName} AS {subqueryAlias}";
+        if (predicates.Count > 0)
+        {
+            sql += " WHERE " + string.Join(" AND ", predicates);
+        }
+
+        _sql.Push(sql + ")");
+        return node;
+    }
+
+    private Expression VisitQueryableNullableAggregate(MethodCallExpression node)
+    {
+        if (node.Arguments.Count != 2)
+        {
+            throw new UnsupportedQueryExpressionException(
+                $"Queryable {node.Method.Name} subqueries require a source and scalar selector.");
+        }
+
+        if (Nullable.GetUnderlyingType(node.Type) is null && !_allowNonNullableAggregateProjection)
+        {
+            throw new UnsupportedQueryExpressionException(
+                $"Queryable {node.Method.Name} subqueries require a nullable result to preserve empty-set semantics.");
+        }
+
+        var source = RewriteCapturedQueryableRoots(node.Arguments[0]);
+        source = ResolveQueryableExpression(source);
+        var model = ResolveQueryModel(source);
+        var query = QueryModelFactory.Create(source);
+        if (query.Orderings.Count > 0 || query.Skip is not null || query.Take is not null)
+        {
+            throw new UnsupportedQueryExpressionException(
+                $"Queryable {node.Method.Name} subqueries do not support ordering or paging.");
+        }
+
+        var aliases = new Dictionary<ParameterExpression, (EntityModel Model, string Alias)>();
+        if (_entityParameter is not null)
+        {
+            aliases[_entityParameter] = (_model, _alias);
+        }
+
+        if (_correlatedAliases is not null)
+        {
+            foreach (var pair in _correlatedAliases)
+            {
+                aliases[pair.Key] = pair.Value;
+            }
+        }
+
+        var subqueryAlias = _alias == "e" ? "s" : _alias + "s";
+        var selector = UnquoteLambda(node.Arguments[1]);
+        EnsureNoNullableValueDereference(node.Method.Name, selector.Body);
+        var selectorType = Nullable.GetUnderlyingType(selector.ReturnType) ?? selector.ReturnType;
+        if (node.Method.Name is nameof(Queryable.Min) or nameof(Queryable.Max) &&
+            (selectorType == typeof(bool) || selectorType == typeof(Guid)))
+        {
+            throw new UnsupportedQueryExpressionException(
+                $"Queryable {node.Method.Name} does not support nullable {selectorType.Name} selectors.");
+        }
+        aliases[selector.Parameters[0]] = (model, subqueryAlias);
+        var selectorTranslator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+        var selectorSql = selectorTranslator.TranslateScalar(selector.Body);
+        var predicates = new List<string>();
+        foreach (var predicate in query.Predicates)
+        {
+            var translator = new SqlExpressionTranslator(model, _parameters, subqueryAlias, aliases, useCSharpNullSemantics: true);
+            predicates.Add(translator.TranslatePredicate(predicate));
+        }
+
+        var function = node.Method.Name switch
+        {
+            nameof(Queryable.Min) => "min",
+            nameof(Queryable.Max) => "max",
+            nameof(Queryable.Average) => "avg",
+            _ => throw new UnreachableException()
+        };
+        var aggregateSql = $"{function}({selectorSql})";
+        var resultType = Nullable.GetUnderlyingType(node.Type) ?? node.Type;
+        if (node.Method.Name == nameof(Queryable.Average) && resultType == typeof(double))
+        {
+            aggregateSql += "::double precision";
+        }
+
+        var sql = $"(SELECT {aggregateSql} FROM {model.StoreObjectName} AS {subqueryAlias}";
+        if (predicates.Count > 0)
+        {
+            sql += " WHERE " + string.Join(" AND ", predicates);
+        }
+
+        _sql.Push(sql + ")");
+        return node;
+    }
+
+    private static void EnsureNoNullableValueDereference(string aggregateName, Expression selector)
+    {
+        var visitor = new NullableValueDereferenceVisitor();
+        visitor.Visit(selector);
+        if (visitor.Found)
+        {
+            throw new UnsupportedQueryExpressionException(
+                $"Queryable {aggregateName} selectors cannot dereference nullable values; use a nullable selector to preserve NULL semantics.");
+        }
+    }
+
+    private sealed class NullableValueDereferenceVisitor : ExpressionVisitor
+    {
+        public bool Found { get; private set; }
+
+        protected override Expression VisitMember(MemberExpression node)
+        {
+            if (node.Member.Name == nameof(Nullable<int>.Value) &&
+                node.Expression is not null &&
+                Nullable.GetUnderlyingType(node.Expression.Type) is not null)
+            {
+                Found = true;
+            }
+
+            return base.VisitMember(node);
+        }
+    }
+
+    private static EntityModel ResolveQueryModel(Expression expression)
+    {
+        expression = StripConvert(expression);
+        if (expression is ConstantExpression { Value: IEntityModelSource source })
+        {
+            return source.Model;
+        }
+
+        if (expression is MethodCallExpression call && call.Arguments.Count > 0)
+        {
+            return ResolveQueryModel(call.Arguments[0]);
+        }
+
+        if (expression is MemberExpression)
+        {
+            try
+            {
+                if (ExpressionValueReader.Read(expression) is IEntityModelSource memberSource)
+                {
+                    return memberSource.Model;
+                }
+            }
+            catch (UnsupportedQueryExpressionException)
+            {
+                // Fall through to the deterministic unsupported-source diagnostic below.
+            }
+        }
+
+        throw new UnsupportedQueryExpressionException($"Cannot resolve query source '{expression}'.");
+    }
+
+    private static Expression ResolveQueryableExpression(Expression expression)
+    {
+        expression = StripConvert(expression);
+        if (expression is ConstantExpression or MethodCallExpression)
+        {
+            return expression;
+        }
+
+        try
+        {
+            if (ExpressionValueReader.Read(expression) is IQueryable queryable)
+            {
+                return queryable.Expression;
+            }
+        }
+        catch (UnsupportedQueryExpressionException)
+        {
+            // Fall through to the deterministic unsupported-source diagnostic below.
+        }
+
+        throw new UnsupportedQueryExpressionException($"Cannot resolve query source '{expression}'.");
+    }
+
+    private static Expression RewriteCapturedQueryableRoots(Expression expression)
+    {
+        return new CapturedQueryableRootRewriter().Visit(expression) ?? expression;
+    }
+
+    private sealed class CapturedQueryableRootRewriter : ExpressionVisitor
+    {
+        protected override Expression VisitMember(MemberExpression node)
+        {
+            if (!typeof(IQueryable).IsAssignableFrom(node.Type))
+            {
+                return base.VisitMember(node);
+            }
+
+            try
+            {
+                if (ExpressionValueReader.Read(node) is IQueryable queryable)
+                {
+                    return queryable.Expression;
+                }
+            }
+            catch (UnsupportedQueryExpressionException)
+            {
+                // Ordinary entity members and scalar captures remain unchanged.
+            }
+
+            return base.VisitMember(node);
+        }
     }
 
     private static Expression? TryReadAnyPredicateValue(

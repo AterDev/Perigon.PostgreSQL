@@ -5,6 +5,7 @@ using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Migrations;
 using Perigon.PostgreSQL.NativeAotSmoke;
 using Perigon.PostgreSQL.RawSql;
+using System.Linq.Expressions;
 
 if (!EntityModel.For<SmokeUser>().IsGenerated)
 {
@@ -33,6 +34,15 @@ if (!EntityMaterializerRegistry.TryGet<SmokeProjection>(out _))
 }
 
 var db = new SmokeDbContext();
+using var navigationDb = new SmokeNavigationContext();
+var navigationSql = navigationDb.Owners.Include(owner => owner.Posts).Where(owner => owner.Id > 0).ToQuerySql();
+if (!navigationSql.CommandText.Contains("WHERE", StringComparison.Ordinal))
+    throw new InvalidOperationException("NativeAOT smoke test expected a generated navigation Include.");
+_ = navigationDb.Posts.Include(post => post.SmokeOwner).ToQuerySql();
+Expression<Func<SmokeOwner, IEnumerable<SmokePost>>> filteredNavigation = owner => owner.Posts.Where(post => post.Id > 0).OrderBy(post => post.Id).Take(1);
+_ = navigationDb.Owners.Include(filteredNavigation).ToQuerySql();
+await NavigationIncludeRegistry.GetLoader<SmokeOwner>(typeof(SmokeNavigationContext), nameof(SmokeOwner.Posts))(navigationDb, [], filteredNavigation.Body, CancellationToken.None);
+await NavigationIncludeRegistry.GetLoader<SmokePost>(typeof(SmokeNavigationContext), nameof(SmokePost.SmokeOwner))(navigationDb, [], null, CancellationToken.None);
 var minimumAge = 18;
 var requiredTag = "aot";
 var sql = db.Users
@@ -43,6 +53,32 @@ var sql = db.Users
 
 Console.WriteLine(sql.CommandText);
 Console.WriteLine(sql.Parameters.Count);
+
+var projectedSql = AotExpressionTreeSmoke.BuildProjectedSql(db, minimumAge);
+if (!projectedSql.CommandText.Contains("FROM (SELECT", StringComparison.Ordinal) ||
+    !projectedSql.CommandText.Contains("p.\"UserName\"", StringComparison.Ordinal) ||
+    projectedSql.Parameters.Count != 3)
+{
+    throw new InvalidOperationException("NativeAOT smoke test expected a parameterized post-projection query.");
+}
+
+var correlatedSql = db.Users
+    .Where(user => db.Users.Any(other => other.Id == user.Id && other.Age > minimumAge))
+    .ToQuerySql();
+if (!correlatedSql.CommandText.Contains("EXISTS (SELECT 1", StringComparison.Ordinal) ||
+    correlatedSql.Parameters.Count != 1)
+{
+    throw new InvalidOperationException("NativeAOT smoke test expected a parameterized correlated subquery.");
+}
+
+var countSql = db.Users.Where(user => db.Users.LongCount(other => other.Id == user.Id) > 0L).ToQuerySql();
+if (!countSql.CommandText.Contains("SELECT count(*)", StringComparison.Ordinal))
+{
+    throw new InvalidOperationException("NativeAOT smoke test expected a correlated count subquery.");
+}
+var aggregateSql = AotExpressionTreeSmoke.BuildAggregateSql(db);
+if (!aggregateSql.CommandText.Contains("sum(", StringComparison.OrdinalIgnoreCase))
+    throw new InvalidOperationException("NativeAOT smoke test expected an aggregate projection.");
 
 static IQueryable<SmokeUser> RebuildQuery(SmokeDbContext context, int age) =>
     context.Users.Where(user => user.Age >= age).OrderBy(user => user.UserName).Take(5);
@@ -59,6 +95,15 @@ if (cachedFirst.CommandText != cachedSecond.CommandText ||
 var connectionString = Environment.GetEnvironmentVariable("PERIGON_AOT_CONNECTION_STRING");
 if (!string.IsNullOrWhiteSpace(connectionString))
 {
+    await using var navigationLive = new SmokeNavigationContext(connectionString);
+    await navigationLive.EnsureCreatedAsync();
+    var liveOwner = await navigationLive.Owners.InsertAsync(new SmokeOwner { Name = "aot-owner" });
+    await navigationLive.Posts.InsertAsync(new SmokePost { SmokeOwnerId = liveOwner.Id });
+    var owners = await navigationLive.Owners.Include(owner => owner.Posts.Where(post => post.Id > 0).OrderBy(post => post.Id).Take(1))
+        .Where(owner => owner.Id == liveOwner.Id).ToListAsync();
+    if (owners.Count != 1 || owners[0].Posts.Count != 1)
+        throw new InvalidOperationException("NativeAOT live smoke expected the included collection.");
+
     await using var liveDb = new SmokeDbContext(connectionString);
     await liveDb.EnsureCreatedAsync();
     await liveDb.Users.BulkInsertAsync(
@@ -72,6 +117,31 @@ if (!string.IsNullOrWhiteSpace(connectionString))
     if (liveRows.Count != 1)
     {
         throw new InvalidOperationException("NativeAOT live smoke expected one inserted row.");
+    }
+
+    var aggregates = await AotExpressionTreeSmoke.LoadAggregatesAsync(liveDb);
+    if (aggregates.Count != 1 || aggregates[0].Count != 1 || aggregates[0].Count32 != 1 || aggregates[0].Sum != 21 ||
+        aggregates[0].Minimum != 21 || aggregates[0].Maximum != 21 || aggregates[0].Average != 21d || aggregates[0].MinimumRequired != 21)
+        throw new InvalidOperationException("NativeAOT live smoke expected correlated aggregate results.");
+
+    var emptyAggregateThrew = false;
+    try
+    {
+        await AotExpressionTreeSmoke.LoadEmptyAggregateAsync(liveDb);
+    }
+    catch (InvalidOperationException exception) when (exception.Message == "Sequence contains no elements.")
+    {
+        emptyAggregateThrew = true;
+    }
+    if (!emptyAggregateThrew)
+        throw new InvalidOperationException("NativeAOT live smoke expected empty aggregate to throw.");
+
+    var related = await liveDb.Users.Where(user => user.UserName == "aot-live")
+        .IncludeAsync(liveDb.Users, liveDb.Users, user => user.Id, link => link.Id,
+            link => link.Id, child => child.Id, child => child.Age > 18, (user, children) => children);
+    if (related.Count != 1 || related[0].Count != 1)
+    {
+        throw new InvalidOperationException("NativeAOT live smoke expected one related row.");
     }
 
     var liveUserName = "aot-live";

@@ -431,6 +431,8 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
 
     internal bool SensitiveLoggingEnabled => _options.SensitiveLoggingEnabled;
 
+    internal IReadOnlyList<EntityModel> GetIncludeEntityModels() => GetEntityModels();
+
     internal EntityModel ResolveEntityModel(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
     {

@@ -20,6 +20,56 @@ public static class EntityModelRegistry
         }
     }
 
+    public static void RegisterGeneratedForeignKey<TDependent, TPrincipal>(
+        string constraintName,
+        string dependentPropertyName,
+        string principalPropertyName,
+        ReferentialAction onDelete = ReferentialAction.NoAction,
+        string? dependentNavigationName = null,
+        string? principalNavigationName = null)
+        where TDependent : class
+        where TPrincipal : class
+    {
+        lock (Sync)
+        {
+            if (!Models.TryGetValue(typeof(TDependent), out var dependent) ||
+                !Models.TryGetValue(typeof(TPrincipal), out var principal))
+            {
+                return;
+            }
+
+            var dependentColumn = dependent.GetColumn(dependentPropertyName);
+            var principalColumn = principal.GetColumn(principalPropertyName);
+            if (dependent.ForeignKeys.Any(existing => existing.DependentColumn == dependentColumn))
+            {
+                return;
+            }
+
+            var foreignKey = new ForeignKeyModel(
+                constraintName,
+                dependent,
+                dependentColumn,
+                principal,
+                principalColumn,
+                onDelete,
+                dependentNavigationName,
+                principalNavigationName);
+            Models[typeof(TDependent)] = dependent.Apply(
+                dependent.Schema,
+                dependent.TableName,
+                dependent.Columns,
+                dependent.Comment,
+                dependent.Indexes.Select(static index => new IndexDefinition(
+                    index.IndexName,
+                    index.Columns.Select(static column => column.PropertyName).ToArray(),
+                    index.IsUnique,
+                    index.IncludeColumns.Select(static column => column.PropertyName).ToArray(),
+                    index.Filter,
+                    index.Method)).ToArray(),
+                dependent.ForeignKeys.Concat([foreignKey]).ToArray());
+        }
+    }
+
     public static bool TryGet(Type entityType, out EntityModel model)
     {
         lock (Sync)

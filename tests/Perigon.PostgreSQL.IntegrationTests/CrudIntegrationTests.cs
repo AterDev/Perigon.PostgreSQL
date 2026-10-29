@@ -173,6 +173,26 @@ public sealed class CrudIntegrationTests
     }
 
     [Fact]
+    public async Task Count_and_any_preserve_paging_semantics_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var status = "paged-aggregate-" + Guid.NewGuid().ToString("N");
+        await db.IntegrationUsers.InsertManyReturningAsync([
+            new IntegrationUser { UserName = "Paged-A-" + status, Age = 21, IsActive = true, Status = status },
+            new IntegrationUser { UserName = "Paged-B-" + status, Age = 22, IsActive = true, Status = status },
+            new IntegrationUser { UserName = "Paged-C-" + status, Age = 23, IsActive = true, Status = status }
+        ]);
+
+        var ordered = db.IntegrationUsers
+            .Where(u => u.Status == status)
+            .OrderBy(u => u.Id);
+
+        Assert.Equal(2, await ordered.Take(2).CountAsync());
+        Assert.True(await ordered.Take(1).AnyAsync());
+        Assert.False(await ordered.Skip(3).AnyAsync());
+    }
+
+    [Fact]
     public async Task Expression_update_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
@@ -818,6 +838,32 @@ public sealed class CrudIntegrationTests
     }
 
     [Fact]
+    public async Task Dto_projection_supports_post_filter_order_and_take_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        const string status = "projection-post-filter";
+        foreach (var user in new[]
+        {
+            new IntegrationUser { UserName = "Projection-Post-C", Age = 41, IsActive = true, Status = status },
+            new IntegrationUser { UserName = "Projection-Post-A", Age = 35, IsActive = true, Status = status },
+            new IntegrationUser { UserName = "Projection-Post-B", Age = 22, IsActive = true, Status = status }
+        })
+        {
+            await db.IntegrationUsers.InsertAsync(user);
+        }
+
+        var summaries = await db.IntegrationUsers
+            .Where(u => u.Status == status)
+            .Select(u => new UserSummary { Id = u.Id, UserName = u.UserName, Age = u.Age })
+            .Where(u => u.Age >= 30)
+            .OrderBy(u => u.UserName)
+            .Take(2)
+            .ToListAsync();
+
+        Assert.Equal(["Projection-Post-A", "Projection-Post-C"], summaries.Select(item => item.UserName).ToArray());
+    }
+
+    [Fact]
     public async Task Scalar_projection_executes_against_postgres()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);
@@ -839,6 +885,59 @@ public sealed class CrudIntegrationTests
             .ToScalarListAsync();
 
         Assert.Equal(["Scalar-Alice"], names);
+    }
+
+    [Fact]
+    public async Task Scalar_projection_supports_post_filter_order_and_take_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        const string status = "scalar-post-filter";
+        foreach (var user in new[]
+        {
+            new IntegrationUser { UserName = "Scalar-Post-C", Age = 31, IsActive = true, Status = status },
+            new IntegrationUser { UserName = "Scalar-Post-A", Age = 31, IsActive = true, Status = status },
+            new IntegrationUser { UserName = "Other-Post", Age = 31, IsActive = true, Status = status }
+        })
+        {
+            await db.IntegrationUsers.InsertAsync(user);
+        }
+
+        var names = await db.IntegrationUsers
+            .Where(u => u.Status == status)
+            .Select(u => u.UserName)
+            .Where(name => name.StartsWith("Scalar-Post-"))
+            .OrderBy(name => name)
+            .Take(1)
+            .ToScalarListAsync();
+
+        Assert.Equal(["Scalar-Post-A"], names);
+    }
+
+    [Fact]
+    public async Task Distinct_scalar_projection_runs_before_post_filter_and_take_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        const string status = "scalar-distinct-post-filter";
+        foreach (var user in new[]
+        {
+            new IntegrationUser { UserName = "Distinct-Post-B", Age = 31, IsActive = true, Status = status },
+            new IntegrationUser { UserName = "Distinct-Post-A", Age = 31, IsActive = true, Status = status },
+            new IntegrationUser { UserName = "Distinct-Post-C", Age = 31, IsActive = true, Status = status }
+        })
+        {
+            await db.IntegrationUsers.InsertAsync(user);
+        }
+
+        var names = await db.IntegrationUsers
+            .Where(u => u.Status == status)
+            .Select(u => u.Status!)
+            .Distinct()
+            .Where(value => value == status)
+            .OrderBy(value => value)
+            .Take(1)
+            .ToScalarListAsync();
+
+        Assert.Equal([status], names);
     }
 
     [Fact]

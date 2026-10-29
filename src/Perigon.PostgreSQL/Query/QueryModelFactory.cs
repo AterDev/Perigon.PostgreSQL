@@ -30,25 +30,25 @@ internal static class QueryModelFactory
         switch (call.Method.Name)
         {
             case nameof(Queryable.Where):
-                model.Predicates.Add(UnquoteLambda(call.Arguments[1]));
+                model.AddPredicate(UnquoteLambda(call.Arguments[1]));
                 return;
             case nameof(Queryable.OrderBy):
-                model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), false));
+                model.AddOrdering(UnquoteLambda(call.Arguments[1]), descending: false, primary: true);
                 return;
             case nameof(Queryable.OrderByDescending):
-                model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), true));
+                model.AddOrdering(UnquoteLambda(call.Arguments[1]), descending: true, primary: true);
                 return;
             case nameof(Queryable.ThenBy):
-                model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), false));
+                model.AddOrdering(UnquoteLambda(call.Arguments[1]), descending: false, primary: false);
                 return;
             case nameof(Queryable.ThenByDescending):
-                model.Orderings.Add(new OrderingModel(UnquoteLambda(call.Arguments[1]), true));
+                model.AddOrdering(UnquoteLambda(call.Arguments[1]), descending: true, primary: false);
                 return;
             case nameof(Queryable.Skip):
-                model.Skip = ReadInt(call.Arguments[1]);
+                model.AddSkip(ReadInt(call.Arguments[1]));
                 return;
             case nameof(Queryable.Take):
-                model.Take = ReadInt(call.Arguments[1]);
+                model.AddTake(ReadInt(call.Arguments[1]));
                 return;
             default:
                 throw new UnsupportedQueryExpressionException(

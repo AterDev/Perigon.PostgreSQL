@@ -24,10 +24,11 @@
 | `Take` | 已实现 | `LIMIT $n` | 支持常量和捕获变量 |
 | `Select` 实体投影 | 已实现基础版 | `SELECT columns` | 默认选择实体全部列 |
 | `Select` 标量投影 | 已实现基础版 | `SELECT column AS alias` | 通过 `ToScalarListAsync` 执行 |
-| `Select` DTO/匿名类型 | 已实现基础版 | `SELECT col1 AS ..., col2 AS ...` | DTO 投影可执行，匿名类型限 SQL 预览 |
+| `Select` DTO/匿名类型 | 已实现基础版 | `SELECT col1 AS ..., col2 AS ...` | DTO 投影可执行，匿名类型限 SQL 预览；DTO 标量字段支持关联 `LongCount` / `Sum` 子查询 |
+| 普通 `Select` 后的筛选、排序和分页 | 已实现基础版 | 投影子查询与外层 `WHERE/ORDER BY/LIMIT/OFFSET` | 支持标量及 DTO；分页后筛选/排序等复杂顺序明确拒绝 |
 | `Distinct` | 已实现基础版 | `SELECT DISTINCT ...` | 支持实体/标量/DTO 投影后的 distinct |
-| `Join` | 已实现基础版 | `INNER JOIN` | 支持等值 inner join + DTO 结果投影执行 |
-| `GroupJoin` + `SelectMany` + `DefaultIfEmpty` | 已实现 SQL 预览 | `LEFT JOIN` | 标准 LINQ left join 形态，inner filter 放入 ON |
+| `Join` | 已实现基础版 | `INNER JOIN` | 支持等值连接及 DTO 执行；外表先 `Skip/Take` 时使用子查询，分页后筛选等复杂顺序暂不支持 |
+| `GroupJoin` + `SelectMany` + `DefaultIfEmpty` | 已实现基础版 | `LEFT JOIN` | 标准左连接形态，inner filter 放入 ON；外表分页使用子查询 |
 | `SelectMany` | 计划支持 | `JOIN` / `LATERAL` | 复杂形态后置 |
 
 ## 2. 执行操作
@@ -43,6 +44,12 @@
 | `CountAsync` | 已实现基础版 | `SELECT count(*)` | Docker PostgreSQL 集成测试覆盖 |
 | `AnyAsync` | 已实现基础版 | `SELECT 1 ... LIMIT 1` | Docker PostgreSQL 集成测试覆盖 |
 | `LongCountAsync` | 已实现基础版 | `SELECT count(*)` | 返回 long |
+| `Queryable.Any` 子查询 | 已实现基础版 | `EXISTS (SELECT 1 ...)` | 支持关联 `Where` 等值条件；子查询不支持排序/分页 |
+| `Queryable.Count` 子查询 | 已实现基础版 | `(SELECT count(*)::integer ...)` | 支持筛选条件及 DTO 投影中使用关联计数；溢出由 PostgreSQL 抛出异常；子查询不支持排序/分页 |
+| `Queryable.LongCount` 子查询 | 已实现基础版 | `(SELECT count(*) ...)` | 支持筛选条件及 DTO 投影中使用关联计数；子查询不支持排序/分页 |
+| `Queryable.Sum` 子查询 | 已实现基础版 | `(SELECT COALESCE(sum(...), 0) ...)` | 支持标量选择器及 DTO 投影；空集合按 LINQ Sum 返回 0；int/long 结果显式转换，溢出由 PostgreSQL 抛错；子查询不支持排序/分页 |
+| `Queryable.Min/Max/Average` 子查询 | 已实现基础版 | `(SELECT min/max/avg(...) ...)` | WHERE 中仅支持 nullable 结果；直接 DTO 投影可支持 non-nullable 结果，空集合物化时抛 `InvalidOperationException`；Average(double) 显式转换为 `double precision`；bool/Guid Min/Max 明确拒绝；子查询不支持排序/分页 |
+| `Queryable.All` 子查询 | 已实现基础版 | `NOT EXISTS (SELECT 1 ... WHERE predicate IS NOT TRUE)` | 支持关联谓词和捕获查询；子查询不支持排序/分页，保留 null 违反全称谓词语义 |
 
 ## 3. Where 表达式
 
@@ -139,14 +146,35 @@
 
 | API | 状态 | 计划 SQL |
 | --- | --- | --- |
-| `Include(reference)` | 计划支持 | LEFT JOIN 或 split query |
-| `Include(collection)` | 计划支持 | 默认 split query |
+| `Include(reference)` | 已实现基础版 | 单层多对一引用，单列外键，源生成 loader，split query |
+| `Include(collection)` | 已实现基础版 | 单层一对多 `List<T>` 集合，单列外键，源生成 loader，split query |
 | `IncludeManyAsync(parentKey, childForeignKey, resultSelector)` | 已实现基础版 | split query，子查询使用 `ANY($1)` |
-| filtered include | 已实现基础版 | `IncludeManyAsync` 子查询支持 `Where/OrderBy/Skip/Take`；分页按父级执行且要求稳定排序 |
+| `IncludeManyToManyAsync` | 已实现基础版 | 通过显式中间实体分三次查询加载；单列键，支持服务器端子项过滤，不自动填充导航属性，无排序保证 |
+| `IncludeAsync`（一对多/显式多对多重载） | 已实现基础版 | 与 `IncludeManyAsync` / `IncludeManyToManyAsync` 相同；必须显式提供键 selector，不是 EF 导航 Include |
+| `HasMany().WithMany().UsingEntity<TJoin>(...)` | 已实现基础版 | 显式连接实体生成两条 `FOREIGN KEY`；AOT 安全；连接实体可配置复合主键 |
+| filtered include | 已实现基础版 | 集合导航支持 `Where/OrderBy/ThenBy/Skip/Take`；分页按父级执行并要求排序，追加子实体主键稳定排序 |
 | `ThenInclude` | 计划支持 | 多级 split query |
 | `AsSplitQuery` | 计划支持 | 多查询 |
 | `AsSingleQuery` | 计划支持 | LEFT JOIN |
 | lazy loading | 暂不支持 | 无追踪/AOT 边界 |
+
+导航 `Include` 要求源生成器能够通过命名约定或 `[ForeignKey]` 在同一 `DbContext` 中识别关系；仅在 `OnModelCreating` 中配置的非约定关系不会生成加载器。导航属性需有公开 setter、标记 `[NotMapped]`，目标实体需要公开无参构造函数。生成的关系必须与最终 Fluent 配置匹配；不支持的导航会在调用时抛异常。集合筛选支持先 `Where`、排序，再 `Skip/Take`；分页要求 `OrderBy` 和子实体主键。同一导航重复 Include、投影后保留导航加载、多对多导航和 `ThenInclude` 暂不支持。无跟踪或自动关系修复；仅使用 split query。
+
+```csharp
+var users = await db.Users
+    .Include(user => user.Posts)
+    .Where(user => user.IsActive)
+    .ToListAsync();
+
+var posts = await db.Posts
+    .Include(post => post.User)
+    .ToListAsync();
+
+var filtered = await db.Users
+    .Include(user => user.Posts.Where(post => post.IsPublished)
+        .OrderByDescending(post => post.CreatedAt).Take(5))
+    .ToListAsync();
+```
 
 ## 9. GroupBy 和聚合
 
@@ -177,9 +205,15 @@
 | SQL 注入字符串参数 | 已测试 | 保持参数值 |
 | raw string unsafe API | 暂不支持 | 避免误用 |
 
-## 11. 当前测试数量
+## 11. 测试覆盖与数量核对
 
-截至本文档日期，当前测试数量为 242 个，其中包含 179 个单元/SQL/工具测试和 63 个 Docker PostgreSQL 集成测试，另有 NativeAOT publish/run smoke 与 BenchmarkDotNet SQL 生成基线，覆盖：
+测试数量会随新增用例变化，本文档不将总数作为固定契约。发布审查时可使用以下命令重新统计：
+
+```powershell
+rg -n "\[Fact\]|\[Theory\]" tests/Perigon.PostgreSQL.Tests tests/Perigon.PostgreSQL.IntegrationTests
+```
+
+上述命令统计测试声明，参数化测试的实际执行数量以测试运行结果为准。另有 NativeAOT publish/run smoke 与 BenchmarkDotNet SQL 生成基线，覆盖：
 
 - 默认映射和特性映射。
 - 标识符引用和命名约定。

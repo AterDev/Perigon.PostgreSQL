@@ -8,7 +8,9 @@ public sealed class ForeignKeyModel
         IReadOnlyList<ColumnModel> dependentColumns,
         EntityModel principalEntity,
         IReadOnlyList<ColumnModel> principalColumns,
-        ReferentialAction onDelete = ReferentialAction.NoAction)
+        ReferentialAction onDelete = ReferentialAction.NoAction,
+        string? dependentNavigationName = null,
+        string? principalNavigationName = null)
     {
         ConstraintName = constraintName;
         DependentEntity = dependentEntity;
@@ -16,6 +18,8 @@ public sealed class ForeignKeyModel
         PrincipalEntity = principalEntity;
         PrincipalColumns = principalColumns;
         OnDelete = onDelete;
+        DependentNavigationName = dependentNavigationName;
+        PrincipalNavigationName = principalNavigationName;
     }
 
     public ForeignKeyModel(
@@ -24,8 +28,10 @@ public sealed class ForeignKeyModel
         ColumnModel dependentColumn,
         EntityModel principalEntity,
         ColumnModel principalColumn,
-        ReferentialAction onDelete = ReferentialAction.NoAction)
-        : this(constraintName, dependentEntity, [dependentColumn], principalEntity, [principalColumn], onDelete)
+        ReferentialAction onDelete = ReferentialAction.NoAction,
+        string? dependentNavigationName = null,
+        string? principalNavigationName = null)
+        : this(constraintName, dependentEntity, [dependentColumn], principalEntity, [principalColumn], onDelete, dependentNavigationName, principalNavigationName)
     {
     }
 
@@ -40,6 +46,10 @@ public sealed class ForeignKeyModel
     public IReadOnlyList<ColumnModel> PrincipalColumns { get; }
 
     public ReferentialAction OnDelete { get; }
+
+    public string? DependentNavigationName { get; }
+
+    public string? PrincipalNavigationName { get; }
 
     public ColumnModel DependentColumn => DependentColumns[0];
 

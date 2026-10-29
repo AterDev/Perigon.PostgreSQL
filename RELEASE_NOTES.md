@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.2.0
+
+- Added source-generated, NativeAOT-compatible single-level reference and collection navigation `Include`, including filtered collection loading and per-parent pagination, and explicit-key split-query loading for many-to-many relationships.
+- Expanded Fluent relationship mapping and source-generated foreign key metadata, including principal-side one-to-many and explicit join-entity many-to-many configuration.
+- Added post-projection filtering, sorting and paging, correlated `Any`, `All`, `Count`, `LongCount`, `Sum`, `Min`, `Max` and `Average` support for the documented query shapes, and correct handling of empty non-nullable aggregate projections.
+- Added PostgreSQL integration and NativeAOT smoke coverage; unsupported navigation, aggregate and LINQ shapes continue to fail explicitly. See the LINQ support matrix for current limitations.
+
 ## 0.1.8
 
 - Fixed recursive dependency resolution in the migration CLI that could repeatedly enumerate shared framework directories and overflow the stack when an assembly could not be resolved.

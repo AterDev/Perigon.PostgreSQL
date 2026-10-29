@@ -77,17 +77,20 @@ public static class PostgresQueryableExtensions
             options?.AllowFullTableUpdate == true);
     }
 
-    public static Task<List<T>> ToListAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
+    public static async Task<List<T>> ToListAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         this IQueryable<T> source,
         CancellationToken cancellationToken = default)
         where T : class, new()
     {
         var context = GetContext(source);
-        return CommandExecutor.ExecuteQueryAsync<T>(
+        var results = await CommandExecutor.ExecuteQueryAsync<T>(
             context,
             ResolveEntityModel(source),
             source.ToQuerySql(),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+        if (source is IIncludedQuery<T> included)
+            await included.LoadIncludesAsync(results, cancellationToken).ConfigureAwait(false);
+        return results;
     }
 
     public static Task<List<T>> ToScalarListAsync<T>(
@@ -298,6 +301,11 @@ public static class PostgresQueryableExtensions
 
     private static DbContext GetContext<T>(IQueryable<T> source)
     {
+        if (source.Provider is IIncludeProvider includeProvider)
+        {
+            return includeProvider.Context;
+        }
+
         if (source.Provider is PostgresQueryProvider provider)
         {
             return provider.Context;

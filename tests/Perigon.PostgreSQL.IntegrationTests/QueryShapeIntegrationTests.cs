@@ -152,6 +152,149 @@ public sealed class QueryShapeIntegrationTests
     }
 
     [Fact]
+    public async Task Correlated_any_subquery_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var matching = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Exists-Matching",
+            Age = 30,
+            IsActive = true,
+            Status = "exists-subquery",
+            CreatedAt = new DateTime(2026, 4, 5, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["exists"],
+            ProfileJson = "{}"
+        });
+        var nonMatching = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "Exists-NonMatching",
+            Age = 31,
+            IsActive = true,
+            Status = "exists-subquery",
+            CreatedAt = new DateTime(2026, 4, 6, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["exists"],
+            ProfileJson = "{}"
+        });
+
+        _ = await db.IntegrationBlogs.InsertAsync(new IntegrationBlog
+        {
+            IntegrationUserId = matching.Id,
+            Name = "Exists-Public",
+            IsPublic = true,
+            CreatedAt = new DateTime(2026, 4, 7, 0, 0, 0, DateTimeKind.Utc)
+        });
+        _ = await db.IntegrationBlogs.InsertAsync(new IntegrationBlog
+        {
+            IntegrationUserId = nonMatching.Id,
+            Name = "Exists-Private",
+            IsPublic = false,
+            CreatedAt = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc)
+        });
+
+        var rows = await db.IntegrationUsers
+            .Where(user => user.Status == "exists-subquery" &&
+                           db.IntegrationBlogs.Any(blog =>
+                               blog.IntegrationUserId == user.Id && blog.IsPublic))
+            .ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.Equal(matching.Id, row.Id);
+    }
+
+    [Fact]
+    public async Task Correlated_all_subquery_executes_against_postgres()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var allPublic = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "All-Public",
+            Age = 32,
+            IsActive = true,
+            Status = "all-subquery",
+            CreatedAt = new DateTime(2026, 4, 9, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["all"],
+            ProfileJson = "{}"
+        });
+        var mixed = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "All-Mixed",
+            Age = 33,
+            IsActive = true,
+            Status = "all-subquery",
+            CreatedAt = new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["all"],
+            ProfileJson = "{}"
+        });
+
+        _ = await db.IntegrationBlogs.InsertManyReturningAsync(
+        [
+            new IntegrationBlog
+            {
+                IntegrationUserId = allPublic.Id,
+                Name = "All-Public-A",
+                IsPublic = true,
+                CreatedAt = new DateTime(2026, 4, 11, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new IntegrationBlog
+            {
+                IntegrationUserId = allPublic.Id,
+                Name = "All-Public-B",
+                IsPublic = true,
+                CreatedAt = new DateTime(2026, 4, 12, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new IntegrationBlog
+            {
+                IntegrationUserId = mixed.Id,
+                Name = "All-Mixed-Public",
+                IsPublic = true,
+                CreatedAt = new DateTime(2026, 4, 13, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new IntegrationBlog
+            {
+                IntegrationUserId = mixed.Id,
+                Name = "All-Mixed-Private",
+                IsPublic = false,
+                CreatedAt = new DateTime(2026, 4, 14, 0, 0, 0, DateTimeKind.Utc)
+            }
+        ]);
+
+        var rows = await db.IntegrationUsers
+            .Where(user => user.Status == "all-subquery" &&
+                           db.IntegrationBlogs.All(blog =>
+                               blog.IntegrationUserId != user.Id || blog.IsPublic))
+            .ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.Equal(allPublic.Id, row.Id);
+    }
+
+    [Fact]
+    public async Task Correlated_all_preserves_csharp_null_inequality_semantics()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        var user = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+        {
+            UserName = "All-Nullable-Status",
+            Age = 34,
+            IsActive = true,
+            Status = null,
+            CreatedAt = new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc),
+            Tags = ["all-null"],
+            ProfileJson = "{}"
+        });
+
+        var rows = await db.IntegrationUsers
+            .Where(outer => outer.Id == user.Id &&
+                            db.IntegrationUsers
+                                .Where(inner => inner.Id == outer.Id)
+                                .All(inner => inner.Status != "blocked"))
+            .ToListAsync();
+
+        var row = Assert.Single(rows);
+        Assert.Equal(user.Id, row.Id);
+    }
+
+    [Fact]
     public async Task Left_join_projection_preserves_rows_without_matches()
     {
         await using var db = new IntegrationDbContext(_fixture.ConnectionString);

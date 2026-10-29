@@ -136,7 +136,14 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             }
 
             var info = ReadEntity(dbSet.EntityType);
-            distinct[info.FullName] = info;
+            if (distinct.TryGetValue(info.FullName, out var existing))
+            {
+                info = existing;
+            }
+            else
+            {
+                distinct[info.FullName] = info;
+            }
             if (HasPublicParameterlessConstructor(dbSet.EntityType))
             {
                 materializers[info.FullName] = info.ToMaterializerInfo();
@@ -147,6 +154,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             }
 
             var contextFullName = dbSet.ContextType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            info.AddContext(contextFullName);
             if (!contexts.TryGetValue(contextFullName, out var contextInfo))
             {
                 contextInfo = new ContextInfo(contextFullName, SanitizeIdentifier(contextFullName));
@@ -200,6 +208,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             return;
         }
 
+        PopulateForeignKeys(distinct.Values);
+
         var source = GenerateRegistrationSource(
             distinct.Values.OrderBy(entity => entity.FullName, StringComparer.Ordinal),
             contexts.Values.OrderBy(context => context.FullName, StringComparer.Ordinal),
@@ -234,6 +244,171 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return true;
     }
 
+    private static void PopulateForeignKeys(IEnumerable<EntityInfo> entities)
+    {
+        var entityList = entities.ToArray();
+        foreach (var dependent in entityList)
+        {
+            foreach (var column in dependent.Columns)
+            {
+                if (column.IsPrimaryKey || !column.PropertyName.EndsWith("Id", StringComparison.Ordinal) || column.PropertyName.Length <= 2)
+                {
+                    continue;
+                }
+
+                var columnProperty = FindProperty(dependent.Symbol, column.PropertyName);
+                if (columnProperty is not null && columnProperty.GetAttributes().Any(static attribute => attribute.AttributeClass?.Name == "ForeignKeyAttribute"))
+                {
+                    continue;
+                }
+
+                var principalName = column.PropertyName.Substring(0, column.PropertyName.Length - 2);
+                var principalCandidates = entityList.Where(entity =>
+                    dependent.ContextNames.Overlaps(entity.ContextNames) &&
+                    entity.Symbol.Name.Equals(principalName, StringComparison.Ordinal) &&
+                    entity.Columns.Count(item => item.IsPrimaryKey) == 1 &&
+                    SameType(FindProperty(dependent.Symbol, column.PropertyName)?.Type, FindPrimaryProperty(entity.Symbol, entity.Columns)?.Type)).ToArray();
+                var principal = principalCandidates.Length == 1 ? principalCandidates[0] : null;
+                if (principal is not null &&
+                    (dependent.ContextNames.Count != 1 || principal.ContextNames.Count != 1))
+                {
+                    principal = null;
+                }
+                if (principal is not null && FindPrimaryProperty(principal.Symbol, principal.Columns) is { } principalKey)
+                {
+                    dependent.AddForeignKey(new ForeignKeyInfo(
+                        dependent.FullName,
+                        principal.FullName,
+                        column.PropertyName,
+                        principalKey.Name,
+                        "fk_" + ToSnakeCase(dependent.TableNameLiteral.Trim('"')) + "_" + ToSnakeCase(column.ColumnNameLiteral.Trim('"')),
+                        FindReferenceNavigation(dependent.Symbol, principal.Symbol, principalName),
+                        FindCollectionNavigation(principal.Symbol, dependent.Symbol)));
+                }
+            }
+
+            foreach (var property in ReadProperties(dependent.Symbol))
+            {
+                var attribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.Schema.ForeignKeyAttribute")
+                    ?? property.GetAttributes().FirstOrDefault(static item => item.AttributeClass?.Name == "ForeignKeyAttribute");
+                var name = ReadStringConstructorArgument(attribute) ?? ReadNamedStringArgument(attribute, "Name");
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                var dependentProperty = dependent.Columns.FirstOrDefault(column => column.PropertyName == name)
+                    ?? dependent.Columns.FirstOrDefault(column => column.PropertyName == property.Name);
+                var navigationType = property.Type as INamedTypeSymbol;
+                var isNavigation = navigationType is not null && entityList.Any(entity => SymbolEquals(entity.Symbol, navigationType));
+                var navigation = isNavigation ? property : FindProperty(dependent.Symbol, name!);
+                if (dependentProperty is null || navigation?.Type is not INamedTypeSymbol principalType)
+                {
+                    continue;
+                }
+
+                var principal = entityList.FirstOrDefault(entity =>
+                    dependent.ContextNames.Overlaps(entity.ContextNames) &&
+                    SymbolEquals(entity.Symbol, principalType));
+                if (principal is not null &&
+                    (dependent.ContextNames.Count != 1 || principal.ContextNames.Count != 1))
+                {
+                    principal = null;
+                }
+                var principalKey = principal is null ? null : FindPrimaryProperty(principal.Symbol, principal.Columns);
+                if (principal is null || principalKey is null ||
+                    principal.Columns.Count(static column => column.IsPrimaryKey) != 1 ||
+                    !SameType(FindProperty(dependent.Symbol, dependentProperty.PropertyName)?.Type, principalKey.Type))
+                {
+                    continue;
+                }
+
+                dependent.AddForeignKey(new ForeignKeyInfo(
+                    dependent.FullName,
+                    principal.FullName,
+                    dependentProperty.PropertyName,
+                    principalKey.Name,
+                    "fk_" + ToSnakeCase(dependent.TableNameLiteral.Trim('"')) + "_" + ToSnakeCase(dependentProperty.ColumnNameLiteral.Trim('"')),
+                    isNavigation ? property.Name : name,
+                    FindCollectionNavigation(principal.Symbol, dependent.Symbol)));
+            }
+        }
+    }
+
+    private static IPropertySymbol? FindPrimaryProperty(INamedTypeSymbol type, IReadOnlyList<ColumnInfo> columns)
+    {
+        var name = columns.FirstOrDefault(static column => column.IsPrimaryKey)?.PropertyName;
+        return name is null ? null : FindProperty(type, name);
+    }
+
+    private static IPropertySymbol? FindProperty(INamedTypeSymbol type, string name)
+    {
+        return ReadProperties(type).FirstOrDefault(property => property.Name == name);
+    }
+
+    private static string? FindReferenceNavigation(INamedTypeSymbol dependent, INamedTypeSymbol principal, string preferredName)
+    {
+        return FindReferenceNavigationProperty(dependent, principal, preferredName)?.Name;
+    }
+
+    private static IPropertySymbol? FindReferenceNavigationProperty(INamedTypeSymbol dependent, INamedTypeSymbol principal, string? preferredName)
+    {
+        return ReadProperties(dependent).FirstOrDefault(property =>
+            (preferredName is null || property.Name == preferredName) &&
+            property.Type is INamedTypeSymbol named && SymbolEquals(named, principal))
+            ?? ReadProperties(dependent).FirstOrDefault(property =>
+                property.Type is INamedTypeSymbol named && SymbolEquals(named, principal));
+    }
+
+    private static string? FindCollectionNavigation(INamedTypeSymbol principal, INamedTypeSymbol dependent)
+    {
+        return FindCollectionNavigationProperty(principal, dependent)?.Name;
+    }
+
+    private static IPropertySymbol? FindCollectionNavigationProperty(INamedTypeSymbol principal, INamedTypeSymbol dependent, string? preferredName = null)
+    {
+        foreach (var property in ReadProperties(principal))
+        {
+            if ((preferredName is null || property.Name == preferredName) &&
+                property.Type is INamedTypeSymbol { IsGenericType: true } named &&
+                named.TypeArguments.Length == 1 &&
+                SymbolEquals(named.TypeArguments[0] as INamedTypeSymbol ?? dependent, dependent))
+            {
+                return property;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool SameType(ITypeSymbol? left, ITypeSymbol? right)
+    {
+        if (left is null || right is null)
+        {
+            return false;
+        }
+
+        return SymbolEqualityComparer.Default.Equals(UnwrapNullable(left), UnwrapNullable(right));
+    }
+
+    private static ITypeSymbol UnwrapNullable(ITypeSymbol type)
+    {
+        return type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable
+            ? nullable.TypeArguments[0]
+            : type;
+    }
+
+    private static bool IsNullableType(ITypeSymbol type)
+    {
+        return type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T ||
+            (type.IsReferenceType && type.NullableAnnotation == NullableAnnotation.Annotated);
+    }
+
+    private static bool SymbolEquals(INamedTypeSymbol left, INamedTypeSymbol right)
+    {
+        return SymbolEqualityComparer.Default.Equals(left, right);
+    }
+
     private static EntityInfo ReadEntity(INamedTypeSymbol entity)
     {
         var viewAttribute = FindAttribute(entity.GetAttributes(), "Perigon.PostgreSQL.Attributes.ViewAttribute");
@@ -258,6 +433,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             .ToArray();
 
         return new EntityInfo(
+            entity,
             entity.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             SanitizeIdentifier(entity.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)),
             Literal(schema),
@@ -444,6 +620,76 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             }
 
             builder.AppendLine("                });");
+        }
+
+        foreach (var entity in entityList)
+        {
+            foreach (var foreignKey in entity.ForeignKeys)
+            {
+                builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityModelRegistry.RegisterGeneratedForeignKey<{foreignKey.DependentFullName}, {foreignKey.PrincipalFullName}>(");
+                builder.AppendLine($"                {Literal(foreignKey.ConstraintName)}, {Literal(foreignKey.DependentProperty)}, {Literal(foreignKey.PrincipalProperty)}, global::Perigon.PostgreSQL.Metadata.ReferentialAction.NoAction, {Literal(foreignKey.DependentNavigation)}, {Literal(foreignKey.PrincipalNavigation)});");
+            }
+        }
+
+        foreach (var principal in entityList)
+        {
+            foreach (var foreignKey in entityList.SelectMany(static entity => entity.ForeignKeys)
+                .Where(foreignKey => foreignKey.PrincipalFullName == principal.FullName && foreignKey.PrincipalNavigation is not null))
+            {
+                var dependentEntity = entityList.First(entity => entity.FullName == foreignKey.DependentFullName);
+                if (FindCollectionNavigationProperty(principal.Symbol, dependentEntity.Symbol, foreignKey.PrincipalNavigation!) is not { SetMethod.DeclaredAccessibility: Accessibility.Public } navigation ||
+                    navigation.SetMethod.IsInitOnly ||
+                    navigation.Type is not INamedTypeSymbol { IsGenericType: true } collectionType ||
+                    collectionType.OriginalDefinition.ToDisplayString() != "System.Collections.Generic.List<T>" ||
+                    !HasPublicParameterlessConstructor(principal.Symbol) ||
+                    !HasPublicParameterlessConstructor(dependentEntity.Symbol))
+                {
+                    continue;
+                }
+
+                var dependent = dependentEntity;
+                var principalKey = FindProperty(principal.Symbol, foreignKey.PrincipalProperty);
+                var dependentKey = FindProperty(dependent.Symbol, foreignKey.DependentProperty);
+                if (principalKey is null || dependentKey is null || IsNullableType(principalKey.Type) || !SameType(principalKey.Type, dependentKey.Type))
+                {
+                    continue;
+                }
+
+                foreach (var contextName in principal.ContextNames.Intersect(dependent.ContextNames, StringComparer.Ordinal))
+                {
+                    builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.NavigationIncludeRegistry.Register<{principal.FullName}>(typeof({contextName}), {Literal(navigation.Name)}, static (context, parents, navigationExpression, cancellationToken) =>");
+                    builder.AppendLine($"                global::Perigon.PostgreSQL.NavigationIncludeLoader.LoadCollectionAsync<{principal.FullName}, {dependent.FullName}, {UnwrapNullable(principalKey.Type).ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}>(context, parents, {Literal(foreignKey.PrincipalProperty)}, {Literal(foreignKey.DependentProperty)}, {Literal(navigation.Name)}, navigationExpression, static (parent, children) => parent.{EscapeIdentifier(navigation.Name)} = children, cancellationToken));");
+                }
+            }
+        }
+
+        foreach (var dependent in entityList)
+        {
+            foreach (var foreignKey in dependent.ForeignKeys.Where(static foreignKey => foreignKey.DependentNavigation is not null))
+            {
+                var principal = entityList.FirstOrDefault(entity => entity.FullName == foreignKey.PrincipalFullName);
+                var principalKey = principal is null ? null : FindProperty(principal.Symbol, foreignKey.PrincipalProperty);
+                var dependentKey = FindProperty(dependent.Symbol, foreignKey.DependentProperty);
+                var navigation = principal is null
+                    ? null
+                    : FindReferenceNavigationProperty(dependent.Symbol, principal.Symbol, foreignKey.DependentNavigation);
+                if (principal is null || principalKey is null || dependentKey is null || navigation is null ||
+                    IsNullableType(principalKey.Type) ||
+                    navigation.SetMethod?.DeclaredAccessibility != Accessibility.Public ||
+                    navigation.SetMethod.IsInitOnly ||
+                    !HasPublicParameterlessConstructor(dependent.Symbol) ||
+                    !HasPublicParameterlessConstructor(principal.Symbol) ||
+                    !SameType(principalKey.Type, dependentKey.Type))
+                {
+                    continue;
+                }
+
+                foreach (var contextName in dependent.ContextNames.Intersect(principal.ContextNames, StringComparer.Ordinal))
+                {
+                    builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.NavigationIncludeRegistry.Register<{dependent.FullName}>(typeof({contextName}), {Literal(navigation.Name)}, static (context, entities, navigationExpression, cancellationToken) =>");
+                    builder.AppendLine($"                global::Perigon.PostgreSQL.NavigationIncludeLoader.LoadReferenceAsync<{dependent.FullName}, {principal.FullName}, {UnwrapNullable(principalKey.Type).ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}>(context, entities, {Literal(foreignKey.DependentProperty)}, {Literal(foreignKey.PrincipalProperty)}, {Literal(navigation.Name)}, navigationExpression, static (dependent, principal) => dependent.{EscapeIdentifier(navigation.Name)} = principal!, cancellationToken));");
+                }
+            }
         }
 
         foreach (var context in contextList)
@@ -1067,6 +1313,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
     private sealed class EntityInfo
     {
         public EntityInfo(
+            INamedTypeSymbol symbol,
             string fullName,
             string safeName,
             string schemaLiteral,
@@ -1076,6 +1323,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             string commentLiteral,
             IReadOnlyList<ColumnInfo> columns)
         {
+            Symbol = symbol;
             FullName = fullName;
             SafeName = safeName;
             SchemaLiteral = schemaLiteral;
@@ -1085,6 +1333,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             CommentLiteral = commentLiteral;
             Columns = columns;
         }
+
+        public INamedTypeSymbol Symbol { get; }
 
         public string FullName { get; }
 
@@ -1102,10 +1352,54 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         public IReadOnlyList<ColumnInfo> Columns { get; }
 
+        public List<ForeignKeyInfo> ForeignKeys { get; } = [];
+
+        public void AddForeignKey(ForeignKeyInfo foreignKey)
+        {
+            var existingIndex = ForeignKeys.FindIndex(existing => existing.DependentProperty == foreignKey.DependentProperty);
+            if (existingIndex >= 0)
+            {
+                ForeignKeys[existingIndex] = foreignKey;
+            }
+            else
+            {
+                ForeignKeys.Add(foreignKey);
+            }
+        }
+
+        public HashSet<string> ContextNames { get; } = new(StringComparer.Ordinal);
+
+        public void AddContext(string contextFullName)
+        {
+            ContextNames.Add(contextFullName);
+        }
+
         public MaterializerInfo ToMaterializerInfo()
         {
             return new MaterializerInfo(FullName, SafeName, Columns);
         }
+    }
+
+    private sealed class ForeignKeyInfo
+    {
+        public ForeignKeyInfo(string dependentFullName, string principalFullName, string dependentProperty, string principalProperty, string constraintName, string? dependentNavigation, string? principalNavigation)
+        {
+            DependentFullName = dependentFullName;
+            PrincipalFullName = principalFullName;
+            DependentProperty = dependentProperty;
+            PrincipalProperty = principalProperty;
+            ConstraintName = constraintName;
+            DependentNavigation = dependentNavigation;
+            PrincipalNavigation = principalNavigation;
+        }
+
+        public string DependentFullName { get; }
+        public string PrincipalFullName { get; }
+        public string DependentProperty { get; }
+        public string PrincipalProperty { get; }
+        public string ConstraintName { get; }
+        public string? DependentNavigation { get; }
+        public string? PrincipalNavigation { get; }
     }
 
     private sealed class IndexInfo
