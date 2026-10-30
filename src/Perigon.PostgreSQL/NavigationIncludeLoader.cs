@@ -20,6 +20,7 @@ public static class NavigationIncludeLoader
         var parentModel = context.ResolveEntityModel(typeof(TParent));
         var childModel = context.ResolveEntityModel(typeof(TChild));
         var childQuery = FilteredIncludeParser.Parse(navigationExpression, typeof(TChild));
+        context.ApplyQueryFilters(typeof(TChild), childQuery);
         ValidateRelationship(context, typeof(TChild), childForeignProperty, typeof(TParent), parentProperty, navigationName, collection: true);
         var parentColumn = parentModel.GetColumn(parentProperty);
         var foreignColumn = childModel.GetColumn(childForeignProperty);
@@ -46,12 +47,14 @@ public static class NavigationIncludeLoader
             throw new UnsupportedQueryExpressionException("Filtering reference Include is not supported.");
         var dependentModel = context.ResolveEntityModel(typeof(TDependent));
         var principalModel = context.ResolveEntityModel(typeof(TPrincipal));
+        var principalQuery = new QueryModel();
+        context.ApplyQueryFilters(typeof(TPrincipal), principalQuery);
         ValidateRelationship(context, typeof(TDependent), foreignProperty, typeof(TPrincipal), principalProperty, navigationName, collection: false);
         var foreignAccessor = GetAccessor(dependentModel.GetColumn(foreignProperty));
         var principalColumn = principalModel.GetColumn(principalProperty);
         var principalAccessor = GetAccessor(principalColumn);
         var keys = dependents.Select(foreignAccessor).OfType<TKey>().Distinct().ToArray();
-        var principals = keys.Length == 0 ? [] : await LoadAsync<TPrincipal, TKey>(context, principalModel, principalColumn, keys, new QueryModel(), cancellationToken).ConfigureAwait(false);
+        var principals = keys.Length == 0 ? [] : await LoadAsync<TPrincipal, TKey>(context, principalModel, principalColumn, keys, principalQuery, cancellationToken).ConfigureAwait(false);
         var lookup = principals.ToDictionary(principal => principalAccessor(principal)!, principal => principal);
         foreach (var dependent in dependents)
         {
@@ -71,7 +74,13 @@ public static class NavigationIncludeLoader
         where TEntity : class, new() where TKey : notnull
     {
         var set = new DbSet<TEntity>(context, model);
-        var sql = IncludeManyExtensions.BuildChildrenSql(set, column, keys, queryModel, useCSharpNullSemantics: true);
+        var sql = IncludeManyExtensions.BuildChildrenSql(
+            set,
+            column,
+            keys,
+            queryModel,
+            useCSharpNullSemantics: true,
+            applyGlobalFilters: false);
         return CommandExecutor.ExecuteQueryAsync<TEntity>(context, model, sql, cancellationToken);
     }
 

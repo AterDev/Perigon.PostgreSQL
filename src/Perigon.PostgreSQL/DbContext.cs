@@ -1,5 +1,6 @@
 using Npgsql;
 using System.Diagnostics.CodeAnalysis;
+using System.Data;
 using Microsoft.Extensions.Logging;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Migrations;
@@ -9,7 +10,19 @@ using Perigon.PostgreSQL.Sql;
 
 namespace Perigon.PostgreSQL;
 
-public abstract class DbContext : IDisposable, IAsyncDisposable
+/// <summary>
+/// Options for an explicit database transaction.
+/// </summary>
+public sealed class TransactionOptions
+{
+    /// <summary>
+    /// Gets the PostgreSQL transaction isolation level. The default is
+    /// <see cref="IsolationLevel.ReadCommitted"/>.
+    /// </summary>
+    public IsolationLevel IsolationLevel { get; init; } = IsolationLevel.ReadCommitted;
+}
+
+public abstract partial class DbContext : IDisposable, IAsyncDisposable
 {
     private readonly Dictionary<Type, object> _sets = [];
     private readonly DbContextOptions _options;
@@ -55,6 +68,8 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         where T : class
     {
         ThrowIfDisposed();
+        if (HasAmbientFilterScope)
+            return new DbSet<T>(this, ResolveEntityModel(typeof(T)));
         if (_sets.TryGetValue(typeof(T), out var existing))
         {
             return (DbSet<T>)existing;
@@ -284,11 +299,6 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
     protected virtual IReadOnlyList<EntityModel> GetEntityModels()
     {
         var models = EntityModelRegistry.GetContextModels(GetType());
-        if (models.Count == 0)
-        {
-            return models;
-        }
-
         var builder = new ModelBuilder();
         OnModelCreating(builder);
         return builder.Apply(models);
@@ -302,19 +312,49 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         Func<CancellationToken, Task> action,
         CancellationToken cancellationToken = default)
     {
+        await TransactionAsync(action, options: null, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs an operation in a transaction using the supplied options.
+    /// The cancellation token controls opening the connection, the action, and
+    /// all commands in the action. Commit is completed with a non-cancellable
+    /// token, so cancellation arriving after the action has completed does not
+    /// interrupt the commit call. A connection failure during commit can still
+    /// leave the final database outcome unknown.
+    /// </summary>
+    public async Task TransactionAsync(
+        Func<CancellationToken, Task> action,
+        TransactionOptions? options,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(action);
         _ = await TransactionAsync(async ct =>
         {
             await action(ct).ConfigureAwait(false);
             return true;
-        }, cancellationToken).ConfigureAwait(false);
+        }, options, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<TResult> TransactionAsync<TResult>(
         Func<CancellationToken, Task<TResult>> action,
         CancellationToken cancellationToken = default)
     {
+        return await TransactionAsync(action, options: null, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs an operation in a transaction using the supplied options.
+    /// Nested transactions are not supported; an inner operation reuses the
+    /// outer transaction when it is issued through the same context.
+    /// </summary>
+    public async Task<TResult> TransactionAsync<TResult>(
+        Func<CancellationToken, Task<TResult>> action,
+        TransactionOptions? options,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(action);
+        options ??= new TransactionOptions();
         using var operation = EnterTransactionOperation();
         if (_transaction is not null)
         {
@@ -322,14 +362,19 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         }
 
         await using var connection = await GetDataSource().OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection
+            .BeginTransactionAsync(options.IsolationLevel, cancellationToken)
+            .ConfigureAwait(false);
         _transactionConnection = connection;
         _transaction = transaction;
 
         try
         {
             var result = await action(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            // Once the action has completed, do not let caller cancellation
+            // interrupt the commit call. A connection failure can still leave
+            // the final database outcome unknown.
+            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
             return result;
         }
         catch
@@ -437,8 +482,13 @@ public abstract class DbContext : IDisposable, IAsyncDisposable
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
     {
         ThrowIfDisposed();
-        return GetEntityModels().FirstOrDefault(item => item.ClrType == entityType)
-            ?? EntityModel.For(entityType);
+        var configured = GetEntityModels().FirstOrDefault(item => item.ClrType == entityType);
+        if (configured is not null)
+            return configured;
+
+        var builder = new ModelBuilder();
+        OnModelCreating(builder);
+        return builder.Apply([EntityModel.For(entityType)])[0];
     }
 
     public async ValueTask DisposeAsync()

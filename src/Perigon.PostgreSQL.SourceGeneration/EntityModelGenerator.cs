@@ -68,6 +68,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             !InheritsFrom(contextType, "Perigon.PostgreSQL.DbContext") ||
             !IsAccessibleFromGeneratedCode(contextType) ||
             type.TypeArguments[0] is not INamedTypeSymbol entityType ||
+            entityType.IsAbstract ||
             IsNotMapped(entityType))
         {
             return null;
@@ -523,6 +524,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                          conventionIdentity;
         var isGenerated = ReadNamedBoolArgument(columnAttribute, "IsGenerated") || databaseGeneratedOption == 2;
         var isArray = ReadNamedBoolArgument(columnAttribute, "IsArray") || IsArrayLike(property.Type);
+        var autoTimestampAttribute = FindAttribute(property.GetAttributes(), "Perigon.PostgreSQL.Attributes.AutoTimestampAttribute");
+        var timestampOnInsert = autoTimestampAttribute is not null && ReadBoolConstructorArgument(autoTimestampAttribute, 0, true);
+        var timestampOnUpdate = autoTimestampAttribute is not null && ReadBoolConstructorArgument(autoTimestampAttribute, 1, false);
 
         return new ColumnInfo(
             property.Name,
@@ -541,7 +545,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 Literal(ReadComment(commentAttribute)),
                 ReadUnicode(unicodeAttribute),
             property.SetMethod is { DeclaredAccessibility: Accessibility.Public },
-            property.SetMethod?.IsInitOnly == true);
+            property.SetMethod?.IsInitOnly == true,
+            timestampOnInsert,
+            timestampOnUpdate);
     }
 
     private static string GenerateRegistrationSource(
@@ -574,7 +580,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             builder.AppendLine("                    {");
             foreach (var column in entity.Columns)
             {
-                builder.AppendLine($"                        global::Perigon.PostgreSQL.Metadata.ColumnModel.CreateGenerated<{entity.FullName}, {column.PropertyType}>(");
+                builder.AppendLine($"                        global::Perigon.PostgreSQL.Metadata.ColumnModel.CreateGeneratedWithTimestamp<{entity.FullName}, {column.PropertyType}>(");
                 builder.AppendLine($"                            {Literal(column.PropertyName)},");
                 builder.AppendLine($"                            {column.ColumnNameLiteral},");
                 builder.AppendLine($"                            {column.TypeNameLiteral},");
@@ -587,7 +593,11 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 builder.AppendLine($"                            {IntLiteral(column.Precision)},");
                 builder.AppendLine($"                            {IntLiteral(column.Scale)},");
                 builder.AppendLine($"                            {column.CommentLiteral},");
-                builder.AppendLine($"                            {NullableBoolLiteral(column.IsUnicode)}),");
+                builder.AppendLine($"                            {NullableBoolLiteral(column.IsUnicode)},");
+                builder.AppendLine("                            null,");
+                builder.AppendLine("                            null,");
+                builder.AppendLine($"                            {BoolLiteral(column.TimestampOnInsert)},");
+                builder.AppendLine($"                            {BoolLiteral(column.TimestampOnUpdate)}),");
             }
 
             builder.AppendLine("                    },");
@@ -617,6 +627,18 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             foreach (var column in entity.Columns)
             {
                 builder.AppendLine($"                    [{Literal(column.PropertyName)}] = static entity => entity.{column.MemberAccessName},");
+            }
+
+            builder.AppendLine("                });");
+            var writableSetters = entity.Columns
+                .Where(static column => column.CanWrite && !column.IsInitOnly)
+                .ToArray();
+            builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityValueAccessorRegistry.RegisterSetters<{entity.FullName}>(");
+            builder.AppendLine("                new global::System.Collections.Generic.Dictionary<string, global::System.Action<" + entity.FullName + ", object?>>");
+            builder.AppendLine("                {");
+            foreach (var column in writableSetters)
+            {
+                builder.AppendLine($"                    [{Literal(column.PropertyName)}] = static (entity, value) => entity.{column.MemberAccessName} = value is null ? default! : ({column.PropertyType})value,");
             }
 
             builder.AppendLine("                });");
@@ -933,6 +955,14 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         }
 
         return false;
+    }
+
+    private static bool ReadBoolConstructorArgument(AttributeData attribute, int index, bool defaultValue)
+    {
+        return attribute.ConstructorArguments.Length > index &&
+            attribute.ConstructorArguments[index].Value is bool value
+            ? value
+            : defaultValue;
     }
 
     private static bool? ReadUnicode(AttributeData? attribute)
@@ -1453,7 +1483,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             string commentLiteral,
             bool? isUnicode,
             bool canWrite,
-            bool isInitOnly)
+            bool isInitOnly,
+            bool timestampOnInsert,
+            bool timestampOnUpdate)
         {
             PropertyName = propertyName;
             MemberAccessName = EscapeIdentifier(propertyName);
@@ -1474,6 +1506,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             IsUnicode = isUnicode;
             CanWrite = canWrite;
             IsInitOnly = isInitOnly;
+            TimestampOnInsert = timestampOnInsert;
+            TimestampOnUpdate = timestampOnUpdate;
         }
 
         public string PropertyName { get; }
@@ -1513,5 +1547,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public bool CanWrite { get; }
 
         public bool IsInitOnly { get; }
+
+        public bool TimestampOnInsert { get; }
+
+        public bool TimestampOnUpdate { get; }
     }
 }

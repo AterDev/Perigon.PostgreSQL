@@ -23,10 +23,17 @@ internal static class UpdateSqlBuilder
 
         var parameters = new ParameterBag();
         const string alias = "e";
-        var assignments = ReadAssignments<T>(model, setters.Body, parameters);
+        var explicitlySet = new HashSet<string>(StringComparer.Ordinal);
+        var assignments = ReadAssignments<T>(model, setters.Body, parameters, explicitlySet);
         if (assignments.Count == 0)
         {
             throw new InvalidOperationException("UPDATE requires at least one Set call.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var column in model.Columns.Where(c => c.TimestampOnUpdate && !explicitlySet.Contains(c.PropertyName)))
+        {
+            assignments.Add($"{Identifier.Quote(column.ColumnName)} = {parameters.Add(ValueGeneration.Timestamp(column, now))}");
         }
 
         var sql = $"UPDATE {model.StoreObjectName} AS {alias} SET " + string.Join(", ", assignments);
@@ -42,11 +49,12 @@ internal static class UpdateSqlBuilder
     private static List<string> ReadAssignments<T>(
         EntityModel model,
         Expression expression,
-        ParameterBag parameters)
+        ParameterBag parameters,
+        HashSet<string> explicitlySet)
         where T : class
     {
         var assignments = new List<string>();
-        ReadAssignmentsRecursive(model, expression, parameters, assignments);
+        ReadAssignmentsRecursive(model, expression, parameters, assignments, explicitlySet);
         return assignments;
     }
 
@@ -54,16 +62,18 @@ internal static class UpdateSqlBuilder
         EntityModel model,
         Expression expression,
         ParameterBag parameters,
-        List<string> assignments)
+        List<string> assignments,
+        HashSet<string> explicitlySet)
     {
         if (expression is MethodCallExpression call &&
             call.Method.Name is nameof(UpdateSetters<object>.Set) or nameof(UpdateSetters<object>.SetExpression))
         {
-            ReadAssignmentsRecursive(model, call.Object ?? call.Arguments[0], parameters, assignments);
+            ReadAssignmentsRecursive(model, call.Object ?? call.Arguments[0], parameters, assignments, explicitlySet);
             var propertyLambda = UnquoteLambda(call.Arguments[^2]);
             var member = StripConvert(propertyLambda.Body) as MemberExpression
                 ?? throw new UnsupportedQueryExpressionException("Update Set target must be a mapped member.");
             var column = model.GetColumn(member.Member.Name);
+            explicitlySet.Add(column.PropertyName);
             var valueSql = ReadUpdateValueSql(model, parameters, call.Arguments[^1]);
             assignments.Add($"{Identifier.Quote(column.ColumnName)} = {valueSql}");
         }

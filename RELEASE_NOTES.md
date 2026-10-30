@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.2.1
+
+- Added named global query filters for structured queries and updates/deletes, including filtered navigation loading and explicit per-query filter bypass.
+- Added opt-in client-side UTC timestamp generation and automatic GUID v7 generation for empty, writable single-column GUID primary keys, including inherited properties and bulk writes.
+- Added transaction isolation options and clarified commit cancellation and unknown-outcome behavior. Multiple operations remain explicitly transaction-scoped without change tracking.
+- Aligned the migration and scaffolding tool package with the runtime release. Raw SQL bypasses query filters and automatic client-side values; tenant values on inserts remain the application's responsibility.
+
 ## 0.2.0
 
 - Added source-generated, NativeAOT-compatible single-level reference and collection navigation `Include`, including filtered collection loading and per-parent pagination, and explicit-key split-query loading for many-to-many relationships.

@@ -25,6 +25,10 @@ public sealed class User
     [Column("user_name")]
     public string UserName { get; set; } = "";
 
+    public Guid TenantId { get; set; }
+
+    public bool IsDeleted { get; set; }
+
     [Column("tags", TypeName = "text[]")]
     public string[] Tags { get; set; } = [];
 
@@ -32,6 +36,10 @@ public sealed class User
     public string? ProfileJson { get; set; }
 }
 ```
+
+单列 Guid 主键在结构化插入路径中使用客户端生成的版本 7 UUID：当主键仍为
+`Guid.Empty` 时，库会在发送 INSERT 前赋值 `Guid.CreateVersion7()`；调用方已经提供的
+非默认 Guid 会保留。这个行为不依赖变更追踪。
 
 ## 定义 `DbContext`
 
@@ -67,6 +75,50 @@ public sealed class AppDbContext : DbContext
 }
 ```
 
+### 全局查询过滤器
+
+全局过滤器在 `OnModelCreating` 中以名称注册。过滤表达式保留为表达式树，随普通
+LINQ 查询翻译为 SQL，不会在客户端执行；同一实体可以注册多个过滤器。
+
+```csharp
+public sealed class AppDbContext : DbContext
+{
+    private readonly Guid _tenantId;
+
+    public AppDbContext(string connectionString, Guid tenantId)
+        : base(builder => builder.UseNpgsql(connectionString))
+    {
+        _tenantId = tenantId;
+    }
+
+    public DbSet<User> Users => Set<User>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        HasQueryFilter("Tenant", (User user) => user.TenantId == _tenantId);
+        HasQueryFilter("NotDeleted", (User user) => !user.IsDeleted);
+    }
+}
+```
+
+`Set<T>()` 创建的查询默认应用全部过滤器。需要明确跳过部分具名过滤器时，使用
+`SetWithoutFilters<T>("FilterName", ...)`；需要跳过全部过滤器时，使用
+`SetIgnoringAllFilters<T>()`。具名 API 会校验过滤器名称，空列表或未知名称会抛出异常，
+避免因拼写错误意外扩大查询范围：
+
+```csharp
+var tenantIncludingDeleted = await db
+    .SetWithoutFilters<User>("NotDeleted")
+    .Where(user => user.Id == userId)
+    .SingleOrDefaultAsync();
+
+var allTenants = await db.SetIgnoringAllFilters<User>().ToListAsync();
+```
+
+过滤器只约束查询，不替代写入授权：使用 `InsertAsync`、`BulkInsertAsync` 或其他写入
+API 时，租户字段的赋值与校验由应用负责。`SqlQuery`、`SqlCommand` 和其他原生 SQL
+不会自动追加全局过滤条件，必须在 SQL 中自行写出租户、软删除等条件。
+
 ## 创建数据库对象
 
 如果你已经定义好了模型和上下文，可以直接创建 schema / table / foreign key / index：
@@ -93,6 +145,40 @@ var inserted = await db.Users.InsertAsync(new User
     ProfileJson = """{"level":3}"""
 });
 ```
+
+### 自动时间字段
+
+可以使用特性或 Fluent API 配置客户端 UTC 时间赋值：
+
+```csharp
+using Perigon.PostgreSQL.Attributes;
+
+public sealed class User
+{
+    public Guid Id { get; set; }
+
+    [AutoTimestamp(onInsert: true)]
+    public DateTimeOffset CreatedAt { get; set; }
+
+    [AutoTimestamp(onInsert: false, onUpdate: true)]
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+```
+
+等价的 Fluent 配置为：
+
+```csharp
+modelBuilder.Entity<User>(entity =>
+{
+    entity.Property(user => user.CreatedAt).HasAutoTimestamp(onInsert: true);
+    entity.Property(user => user.UpdatedAt).HasAutoTimestamp(onInsert: false, onUpdate: true);
+});
+```
+
+插入时，只有默认值时间字段会被填充；调用方已经设置的时间会保留。更新时，配置了
+`onUpdate` 的字段会在 `ExecuteUpdateAsync` 中自动使用当前 UTC 时间，除非同一次更新显式
+设置了该字段。赋值发生在客户端，不会启用变更追踪。直接使用 `SqlCommand`、`SqlQuery`
+或其他原生 SQL 不经过该策略，原生 SQL 需要自行维护时间和主键值。
 
 ## 关系与 Include
 
@@ -124,10 +210,33 @@ var users = await db.Users
 
 `Include` 目前是单层 split query，支持直接引用或一对多集合的筛选、排序和分页；
 `ThenInclude`、多对多导航自动填充、复合键导航 loader 和 `AsSingleQuery` 尚未支持。
-显式多对多关系可通过 `HasMany().WithMany().UsingEntity<TJoin>(...)` 生成两条外键，
-或使用 `IncludeAsync`/`IncludeManyToManyAsync` 通过键 selector 组装结果。仅在
-`OnModelCreating` 中配置且无法被源生成器识别的关系仍可用于 DDL，但不会自动生成
-导航 Include loader。
+多对多关系必须定义显式中间实体。`IncludeManyToManyAsync` 通过父实体、链接实体和子
+实体的 `DbSet` 进行三次查询；写入和删除也必须直接操作链接实体的 `DbSet`。库不提供
+通过父子导航隐式添加或删除多对多关系的操作。`HasMany().WithMany().UsingEntity<TJoin>(...)`
+只用于关系元数据和 DDL，不能替代中间表写入。仅在 `OnModelCreating` 中配置且无法被
+源生成器识别的关系仍可用于 DDL，但不会自动生成导航 Include loader。
+
+## 事务
+
+事务默认使用 PostgreSQL 的 `ReadCommitted` 隔离级别，也可以显式选择隔离级别：
+
+```csharp
+using System.Data;
+
+await db.TransactionAsync(
+    async ct =>
+    {
+        await db.Users.InsertAsync(user, ct);
+        await db.Blogs.InsertAsync(blog, ct);
+    },
+    new TransactionOptions { IsolationLevel = IsolationLevel.Serializable },
+    cancellationToken: cancellationToken);
+```
+
+事务不支持嵌套，也不会自动重试。相同 `DbContext` 中的内部写入会复用外层事务，操作
+必须按顺序等待；需要并行工作时应使用不同的 `DbContext`。取消令牌控制连接打开、事务
+action 和其中的 SQL 命令。action 正常返回后，提交阶段不再响应调用方取消，以避免提交
+等待期间的取消造成误判；如果提交期间发生网络故障，数据库最终状态仍可能未知。
 
 ## 从现有 PostgreSQL 数据库反向生成代码
 

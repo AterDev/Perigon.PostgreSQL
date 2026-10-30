@@ -167,6 +167,7 @@ public static class PostgresQueryableExtensions
         CancellationToken cancellationToken = default)
         where T : class
     {
+        ValueGeneration.PrepareInsert(set.Model, entity);
         return CommandExecutor.ExecuteNonQueryAsync(set.Context, set.ToInsertSql(entity, returning), cancellationToken);
     }
 
@@ -234,6 +235,11 @@ public static class PostgresQueryableExtensions
             return [];
         }
 
+        foreach (var row in rows)
+        {
+            ValueGeneration.PrepareInsert(set.Model, row);
+        }
+
         var effectiveOptions = options ?? new ReturningOptions<T>();
         if (set.Context.TryGetTransactionConnection(out _))
         {
@@ -268,6 +274,11 @@ public static class PostgresQueryableExtensions
         if (rows.Count == 0)
         {
             return 0;
+        }
+
+        foreach (var row in rows)
+        {
+            ValueGeneration.PrepareInsert(set.Model, row);
         }
 
         var effectiveOptions = options ?? new UpsertOptions<T>();
@@ -346,6 +357,11 @@ public static class PostgresQueryableExtensions
             return;
         }
 
+        foreach (var row in rows)
+        {
+            ValueGeneration.PrepareInsert(set.Model, row);
+        }
+
         if (set.Context.TryGetTransactionConnection(out _))
         {
             await BulkInsertValuesCoreAsync(set, rows, options.BatchSize, operationToken).ConfigureAwait(false);
@@ -380,6 +396,7 @@ public static class PostgresQueryableExtensions
         CancellationToken cancellationToken)
         where T : class, new()
     {
+        ValueGeneration.PrepareInsert(set.Model, entity);
         var results = await CommandExecutor.ExecuteQueryAsync<T>(
             set.Context,
             set.Model,

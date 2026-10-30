@@ -34,6 +34,20 @@ if (!EntityMaterializerRegistry.TryGet<SmokeProjection>(out _))
 }
 
 var db = new SmokeDbContext();
+using var auditDb = new SmokeAuditContext();
+var auditModel = auditDb.Items.Model;
+var auditItem = new SmokeAuditItem();
+var filteredAudit = auditDb.Items.ToQuerySql();
+if (!filteredAudit.CommandText.Contains("WHERE", StringComparison.Ordinal) ||
+    !filteredAudit.Parameters.Any(parameter => Equals(parameter.Value, "hidden")))
+    throw new InvalidOperationException("NativeAOT smoke expected a parameterized global filter.");
+var generatedId = Guid.CreateVersion7();
+EntityValueAccessorRegistry.SetValue(auditModel.GetColumn(nameof(SmokeAuditItem.Id)), auditItem, generatedId);
+if (auditItem.Id != generatedId || !auditModel.GetColumn(nameof(SmokeAuditItem.UpdatedTime)).TimestampOnUpdate)
+    throw new InvalidOperationException("NativeAOT smoke expected inherited generated setters and timestamp metadata.");
+var auditUpdate = auditDb.Items.Where(item => item.Id == generatedId).ToUpdateSql(set => set.Set(item => item.Name, "aot"));
+if (!auditUpdate.CommandText.Contains("updated_time", StringComparison.Ordinal))
+    throw new InvalidOperationException("NativeAOT smoke expected an automatic update timestamp.");
 using var navigationDb = new SmokeNavigationContext();
 var navigationSql = navigationDb.Owners.Include(owner => owner.Posts).Where(owner => owner.Id > 0).ToQuerySql();
 if (!navigationSql.CommandText.Contains("WHERE", StringComparison.Ordinal))

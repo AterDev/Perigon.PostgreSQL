@@ -60,6 +60,7 @@ internal static class BulkCopyExecutor
             do
             {
                 var row = enumerator.Current;
+                ValueGeneration.PrepareInsert(set.Model, row);
                 await importer.StartRowAsync(operationToken).ConfigureAwait(false);
                 foreach (var column in columns)
                 {

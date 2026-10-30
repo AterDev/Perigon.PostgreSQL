@@ -211,16 +211,34 @@ public static class IncludeManyExtensions
         Func<IQueryable<TChild>, IQueryable<TChild>>? childQuery)
         where TChild : class, new()
         where TKey : notnull
-        => BuildChildrenSql(children, column, keys, childQuery is null
-            ? new QueryModel()
-            : QueryModelFactory.Create(childQuery(children).Expression));
+    {
+        if (childQuery is null)
+        {
+            var queryModel = new QueryModel();
+            children.Context.ApplyQueryFilters(typeof(TChild), queryModel);
+            return BuildChildrenSql(children, column, keys, queryModel, useCSharpNullSemantics: false, applyGlobalFilters: false);
+        }
+
+        return BuildChildrenSql(
+            children,
+            column,
+            keys,
+            QueryModelFactory.Create(childQuery(children).Expression),
+            useCSharpNullSemantics: false,
+            applyGlobalFilters: false);
+    }
 
     internal static BoundSql BuildChildrenSql<
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TChild,
-        TKey>(DbSet<TChild> children, ColumnModel column, TKey[] keys, QueryModel queryModel, bool useCSharpNullSemantics = false)
+        TKey>(DbSet<TChild> children, ColumnModel column, TKey[] keys, QueryModel queryModel, bool useCSharpNullSemantics = false, bool applyGlobalFilters = true)
         where TChild : class, new()
         where TKey : notnull
     {
+        if (applyGlobalFilters)
+        {
+            children.Context.ApplyQueryFilters(typeof(TChild), queryModel);
+        }
+
         var parameters = new ParameterBag();
         var alias = "e";
         var selectColumns = string.Join(", ", children.Model.Columns.Select(c => $"{alias}.{Identifier.Quote(c.ColumnName)}"));

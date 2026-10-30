@@ -128,6 +128,24 @@ public sealed class ColumnModel
 
     public string? GeneratedColumnSql { get; }
 
+    /// <summary>Whether this field receives a client-generated timestamp on insert.</summary>
+    public bool TimestampOnInsert { get; private set; }
+
+    /// <summary>Whether this field receives a client-generated timestamp on update.</summary>
+    public bool TimestampOnUpdate { get; private set; }
+
+    internal ColumnModel WithTimestampPolicy(bool onInsert, bool onUpdate)
+    {
+        if ((onInsert || onUpdate) && ClrType != typeof(DateTime) && ClrType != typeof(DateTimeOffset)
+            && ClrType != typeof(DateTime?) && ClrType != typeof(DateTimeOffset?))
+            throw new InvalidOperationException($"Automatic timestamp requires a DateTime or DateTimeOffset property: '{DeclaringType.Name}.{PropertyName}'.");
+        if ((onInsert || onUpdate) && !IsWritable)
+            throw new InvalidOperationException($"Automatic timestamp requires a writable database column: '{DeclaringType.Name}.{PropertyName}'.");
+        TimestampOnInsert = onInsert;
+        TimestampOnUpdate = onUpdate;
+        return this;
+    }
+
     public bool IsWritable => !IsIdentity && !IsGenerated;
 
     internal ColumnModel Apply(PropertyConfiguration configuration)
@@ -147,7 +165,8 @@ public sealed class ColumnModel
             configuration.Comment ?? Comment,
                 configuration.IsUnicode ?? IsUnicode,
                 configuration.DefaultSql ?? DefaultSql,
-                configuration.GeneratedColumnSql ?? GeneratedColumnSql);
+                configuration.GeneratedColumnSql ?? GeneratedColumnSql)
+            .WithTimestampPolicy(configuration.TimestampOnInsert ?? TimestampOnInsert, configuration.TimestampOnUpdate ?? TimestampOnUpdate);
     }
 
         internal ColumnModel WithPrimaryKey(bool isPrimaryKey)
@@ -167,7 +186,7 @@ public sealed class ColumnModel
                 Comment,
                 IsUnicode,
                 DefaultSql,
-                GeneratedColumnSql);
+                GeneratedColumnSql).WithTimestampPolicy(TimestampOnInsert, TimestampOnUpdate);
         }
 
     public static ColumnModel CreateGenerated<TDeclaring, TProperty>(
@@ -187,6 +206,17 @@ public sealed class ColumnModel
         string? defaultSql = null,
         string? generatedColumnSql = null)
     {
+        return CreateGeneratedWithTimestamp<TDeclaring, TProperty>(propertyName, columnName, typeName,
+            isPrimaryKey, isIdentity, isGenerated, isArray, isNullable, maxLength, precision, scale,
+            comment, isUnicode, defaultSql, generatedColumnSql, false, false);
+    }
+
+    public static ColumnModel CreateGeneratedWithTimestamp<TDeclaring, TProperty>(
+        string propertyName, string columnName, string? typeName, bool isPrimaryKey, bool isIdentity,
+        bool isGenerated, bool isArray, bool isNullable, int? maxLength, int? precision, int? scale,
+        string? comment, bool? isUnicode, string? defaultSql, string? generatedColumnSql,
+        bool timestampOnInsert, bool timestampOnUpdate)
+    {
         return new ColumnModel(
             typeof(TDeclaring),
             propertyName,
@@ -204,6 +234,6 @@ public sealed class ColumnModel
             comment,
             isUnicode,
             defaultSql,
-            generatedColumnSql);
+            generatedColumnSql).WithTimestampPolicy(timestampOnInsert, timestampOnUpdate);
     }
 }

@@ -71,6 +71,9 @@ public sealed class EntityModel
     public static EntityModel For(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
     {
+        if (entityType.IsAbstract)
+            throw new InvalidOperationException($"Abstract type '{entityType.FullName}' cannot be mapped as an entity.");
+
         if (EntityModelRegistry.TryGet(entityType, out var generated))
         {
             return generated;
@@ -173,7 +176,9 @@ public sealed class EntityModel
                 precision,
                 scale,
                 comment,
-                isUnicode));
+                isUnicode).WithTimestampPolicy(
+                    property.GetCustomAttribute<AutoTimestampAttribute>(inherit: true)?.OnInsert ?? false,
+                    property.GetCustomAttribute<AutoTimestampAttribute>(inherit: true)?.OnUpdate ?? false));
         }
 
             return new EntityModel(entityType, schema, tableName, columns, Array.Empty<ForeignKeyModel>(), view is not null, ReadIndexDefinitions(entityType), entityComment, isGenerated: false);

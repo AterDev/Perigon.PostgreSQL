@@ -50,7 +50,9 @@ internal static class UpsertSqlBuilder
         }
 
         var updateColumns = columns
-            .Where(c => !conflictColumns.Contains(c.ColumnName, StringComparer.Ordinal))
+            .Where(c => !c.IsPrimaryKey &&
+                        !conflictColumns.Contains(c.ColumnName, StringComparer.Ordinal) &&
+                        !(c.TimestampOnInsert && !c.TimestampOnUpdate))
             .ToArray();
         if (updateColumns.Length == 0)
         {

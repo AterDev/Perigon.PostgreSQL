@@ -18,4 +18,10 @@ public sealed class IntegrationDbContext : DbContext
     public DbSet<IntegrationOffsetOrder> IntegrationOffsetOrders => Set<IntegrationOffsetOrder>();
 
     public DbSet<IntegrationOffsetCheckpoint> IntegrationOffsetCheckpoints => Set<IntegrationOffsetCheckpoint>();
+
+    public DbSet<GuidGenerationRow> GuidGenerationRows => Set<GuidGenerationRow>();
+
+    public DbSet<LongGenerationRow> LongGenerationRows => Set<LongGenerationRow>();
+
+    public DbSet<StringGenerationRow> StringGenerationRows => Set<StringGenerationRow>();
 }

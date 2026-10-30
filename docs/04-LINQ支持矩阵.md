@@ -22,6 +22,9 @@
 | `ThenByDescending` | 已实现 | 多列排序 | 仅支持实体成员 |
 | `Skip` | 已实现 | `OFFSET $n` | 支持常量和捕获变量 |
 | `Take` | 已实现 | `LIMIT $n` | 支持常量和捕获变量 |
+| `HasQueryFilter` | 已实现基础版 | 自动追加 `WHERE` 条件 | 在 `OnModelCreating` 中按名称注册；表达式服务端翻译，不做客户端过滤 |
+| `SetWithoutFilters<T>(...)` | 已实现基础版 | 省略指定过滤条件 | 具名跳过；空列表和未知名称抛异常 |
+| `SetIgnoringAllFilters<T>()` | 已实现基础版 | 不追加全局过滤条件 | 显式跳过该实体的全部已注册过滤器 |
 | `Select` 实体投影 | 已实现基础版 | `SELECT columns` | 默认选择实体全部列 |
 | `Select` 标量投影 | 已实现基础版 | `SELECT column AS alias` | 通过 `ToScalarListAsync` 执行 |
 | `Select` DTO/匿名类型 | 已实现基础版 | `SELECT col1 AS ..., col2 AS ...` | DTO 投影可执行，匿名类型限 SQL 预览；DTO 标量字段支持关联 `LongCount` / `Sum` 子查询 |
@@ -141,6 +144,9 @@
 | `InsertManyReturningAsync` | 已实现基础版 | 多值 INSERT RETURNING；多批次默认原子 |
 | `UpsertManyAsync` | 已实现基础版 | ON CONFLICT，支持 identity conflict key |
 | `MergeAsync` | 计划支持 | PostgreSQL 15+ MERGE |
+| 单列 Guid 主键为空时生成版本 7 UUID | 已实现基础版 | 客户端 `Guid.CreateVersion7()`；非默认值保留 |
+| `[AutoTimestamp]` / `HasAutoTimestamp` | 已实现基础版 | 客户端 UTC 时间；插入默认值填充，更新自动更新时间 |
+| 原生 `SqlCommand` / `SqlQuery` 的自动值 | 不适用 | 原生 SQL 绕过客户端值生成 |
 
 ## 8. Include 和导航
 
@@ -152,6 +158,7 @@
 | `IncludeManyToManyAsync` | 已实现基础版 | 通过显式中间实体分三次查询加载；单列键，支持服务器端子项过滤，不自动填充导航属性，无排序保证 |
 | `IncludeAsync`（一对多/显式多对多重载） | 已实现基础版 | 与 `IncludeManyAsync` / `IncludeManyToManyAsync` 相同；必须显式提供键 selector，不是 EF 导航 Include |
 | `HasMany().WithMany().UsingEntity<TJoin>(...)` | 已实现基础版 | 显式连接实体生成两条 `FOREIGN KEY`；AOT 安全；连接实体可配置复合主键 |
+| 多对多隐式写入 | 不支持 | 必须直接操作显式中间实体 `DbSet` |
 | filtered include | 已实现基础版 | 集合导航支持 `Where/OrderBy/ThenBy/Skip/Take`；分页按父级执行并要求排序，追加子实体主键稳定排序 |
 | `ThenInclude` | 计划支持 | 多级 split query |
 | `AsSplitQuery` | 计划支持 | 多查询 |
@@ -202,6 +209,7 @@ var filtered = await db.Users
 | --- | --- | --- |
 | `SqlQuery<T>(FormattableString)` | 已实现基础版 | 参数转 `$1/$2` 并可执行实体查询 |
 | `SqlCommand(FormattableString)` | 已实现基础版 | 参数转 `$1/$2` 并可执行命令 |
+| 原生 SQL 的全局过滤 | 暂不支持自动追加 | 由调用方写入 `WHERE` | `SqlQuery` / `SqlCommand` 不自动应用 `HasQueryFilter`；租户写入校验由应用负责 |
 | SQL 注入字符串参数 | 已测试 | 保持参数值 |
 | raw string unsafe API | 暂不支持 | 避免误用 |
 

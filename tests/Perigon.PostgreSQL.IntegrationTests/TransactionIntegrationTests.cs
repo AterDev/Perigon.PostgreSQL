@@ -1,4 +1,6 @@
 using Perigon.PostgreSQL;
+using Perigon.PostgreSQL.RawSql;
+using System.Data;
 
 namespace Perigon.PostgreSQL.IntegrationTests;
 
@@ -99,6 +101,24 @@ public sealed class TransactionIntegrationTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             db.TransactionAsync(_ => db.TransactionAsync(_ => Task.CompletedTask)));
+    }
+
+    [Fact]
+    public async Task Transaction_uses_configured_isolation_level()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+
+        var isolationLevel = await db.TransactionAsync(
+            async ct =>
+            {
+                var rows = await db
+                    .SqlQuery<TransactionIsolationRow>($"select current_setting('transaction_isolation') as isolation_level")
+                    .ToListAsync(ct);
+                return Assert.Single(rows).IsolationLevel;
+            },
+            new TransactionOptions { IsolationLevel = IsolationLevel.Serializable });
+
+        Assert.Equal("serializable", isolationLevel);
     }
 
     [Fact]
@@ -223,4 +243,38 @@ public sealed class TransactionIntegrationTests
 
         Assert.False(await db.IntegrationUsers.Where(user => user.UserName == "Tx-Cancelled").AnyAsync());
     }
+
+    [Fact]
+    public async Task Cancellation_after_action_completion_does_not_cancel_commit()
+    {
+        await using var db = new IntegrationDbContext(_fixture.ConnectionString);
+        using var cancellation = new CancellationTokenSource();
+
+        await db.TransactionAsync(
+            async ct =>
+            {
+                _ = await db.IntegrationUsers.InsertAsync(new IntegrationUser
+                {
+                    UserName = "Tx-Cancel-After-Action",
+                    Age = 56,
+                    IsActive = true,
+                    Status = "tx-cancel-after-action",
+                    CreatedAt = new DateTime(2026, 2, 10, 0, 0, 0, DateTimeKind.Utc),
+                    Tags = ["tx", "cancel-after-action"],
+                    ProfileJson = """{"tx":"cancel-after-action"}"""
+                }, ct);
+
+                cancellation.Cancel();
+            },
+            cancellationToken: cancellation.Token);
+
+        Assert.True(await db.IntegrationUsers
+            .Where(user => user.UserName == "Tx-Cancel-After-Action")
+            .AnyAsync());
+    }
+}
+
+public sealed class TransactionIsolationRow
+{
+    public string IsolationLevel { get; set; } = "";
 }

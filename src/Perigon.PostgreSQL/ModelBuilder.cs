@@ -370,6 +370,14 @@ public sealed class PropertyBuilder<TEntity, TProperty>
         return this;
     }
 
+    /// <summary>Generates UTC values on the client for the selected write operations.</summary>
+    public PropertyBuilder<TEntity, TProperty> HasAutoTimestamp(bool onInsert = true, bool onUpdate = false)
+    {
+        _configuration.TimestampOnInsert = onInsert;
+        _configuration.TimestampOnUpdate = onUpdate;
+        return this;
+    }
+
     public PropertyBuilder<TEntity, TProperty> HasGeneratedColumnSql(string sql)
     {
         _configuration.GeneratedColumnSql = sql;
@@ -623,6 +631,10 @@ internal sealed class PropertyConfiguration
     public string? DefaultSql { get; set; }
 
     public string? GeneratedColumnSql { get; set; }
+
+    public bool? TimestampOnInsert { get; set; }
+
+    public bool? TimestampOnUpdate { get; set; }
 }
 
 internal sealed class IndexConfiguration

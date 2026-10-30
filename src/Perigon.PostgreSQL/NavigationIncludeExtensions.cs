@@ -38,8 +38,16 @@ public static class NavigationIncludeExtensions
             : new Dictionary<string, Func<DbContext, List<TEntity>, CancellationToken, Task>>(StringComparer.Ordinal);
         if (loaders.ContainsKey(property.Name))
             throw new UnsupportedQueryExpressionException("Repeated Include on the same navigation is not supported.");
-        loaders[property.Name] = (context, entities, cancellationToken) =>
-            loader(context, entities, navigation.Body, cancellationToken);
+        var ignoredFilters = root is ConstantExpression { Value: IQueryFilterSource filterSource }
+            ? filterSource.IgnoredFilters
+            : new HashSet<string>(StringComparer.Ordinal);
+        loaders[property.Name] = async (context, entities, cancellationToken) =>
+        {
+            using var scope = context is IQueryFilterContext filters
+                ? filters.PushIgnoredFilters(ignoredFilters)
+                : null;
+            await loader(context, entities, navigation.Body, cancellationToken).ConfigureAwait(false);
+        };
         return new IncludedQueryable<TEntity>(inner, source.Expression, loaders);
     }
 }
