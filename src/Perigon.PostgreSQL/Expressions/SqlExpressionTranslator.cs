@@ -461,9 +461,15 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
         }
 
         var lambda = UnquoteLambda(node.Arguments[1]);
+        if (TryTranslateArrayStringPredicate(lambda, column, out var stringPredicate))
+        {
+            _sql.Push(stringPredicate);
+            return node;
+        }
+
         if (StripConvert(lambda.Body) is not BinaryExpression { NodeType: ExpressionType.Equal } binary)
         {
-            throw new UnsupportedQueryExpressionException("Array Any currently supports equality predicates only.");
+            throw new UnsupportedQueryExpressionException("Array Any supports equality predicates and string Contains, StartsWith, or EndsWith predicates.");
         }
 
         var valueExpression = TryReadAnyPredicateValue(binary.Left, binary.Right, lambda.Parameters[0])
@@ -471,6 +477,39 @@ internal sealed class SqlExpressionTranslator : ExpressionVisitor
             ?? throw new UnsupportedQueryExpressionException("Array Any predicate must compare the element to a value.");
         _sql.Push($"{_parameters.Add(ExpressionValueReader.Read(valueExpression))} = ANY({column})");
         return node;
+    }
+
+    private bool TryTranslateArrayStringPredicate(
+        LambdaExpression lambda,
+        string column,
+        out string sql)
+    {
+        sql = string.Empty;
+        if (StripConvert(lambda.Body) is not MethodCallExpression call ||
+            call.Object is null ||
+            StripConvert(call.Object) != lambda.Parameters[0] ||
+            call.Method.DeclaringType != typeof(string) ||
+            call.Arguments.Count != 1 ||
+            call.Arguments[0].Type != typeof(string))
+        {
+            return false;
+        }
+
+        var (prefix, suffix) = call.Method.Name switch
+        {
+            nameof(string.Contains) => ("%", "%"),
+            nameof(string.StartsWith) => (string.Empty, "%"),
+            nameof(string.EndsWith) => ("%", string.Empty),
+            _ => (null, null)
+        };
+        if (prefix is null || suffix is null)
+        {
+            return false;
+        }
+
+        var pattern = StringSqlTranslation.ReadLikePattern(call.Arguments[0], prefix, suffix);
+        sql = $"EXISTS (SELECT 1 FROM unnest({column}) AS p(\"value\") WHERE p.\"value\" LIKE {_parameters.Add(pattern)} ESCAPE '\\')";
+        return true;
     }
 
     private Expression VisitEnumerableAll(MethodCallExpression node)

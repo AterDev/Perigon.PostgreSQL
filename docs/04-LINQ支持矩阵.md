@@ -110,6 +110,7 @@
 | 空数组参数 | 已实现 | 仍作为参数绑定 |
 | `u.Tags.Any()` | 已实现 | `cardinality(u.tags) > 0` |
 | `u.Tags.Any(t => t == value)` | 已实现 | `$1 = ANY(u.tags)` |
+| `u.Tags.Any(t => t.Contains(value))` | 已实现 | `EXISTS (SELECT 1 FROM unnest(u.tags) ... LIKE $1)`；支持 `Contains` / `StartsWith` / `EndsWith`，参数按 LIKE 字面量转义 |
 | `u.Tags.All(t => t == value)` | 已实现基础版 | `NOT EXISTS (SELECT 1 FROM unnest(u.tags) ... IS DISTINCT FROM $1)` |
 | 多维数组 | 暂不支持 | 后置 |
 

@@ -155,6 +155,119 @@ public sealed class GlobalQueryFilterIntegrationTests(DockerPostgresFixture fixt
             ["soft-deleted-child", "visible-child"],
             scopedGraph.Children.Select(child => child.Name).Order());
     }
+
+    [Fact]
+    public async Task Correlated_any_with_nested_any_keeps_tenant_soft_delete_filters_and_database_paging()
+    {
+        var schema = fixture.CreateIsolatedSchema("global_filters_correlated_any");
+        var marker = "correlated-any-" + Guid.NewGuid().ToString("N");
+        var candidateName = marker + "-candidate";
+        var qualifierName = marker + "-qualifier";
+        await using var tenantOne = new GlobalFilterDbContext(fixture.ConnectionString, schema, tenantId: 1);
+        await tenantOne.EnsureCreatedAsync();
+
+        var tenantOneMatch = await tenantOne.Parents.InsertAsync(new GlobalFilterParent
+        {
+            TenantId = 1,
+            Name = marker + "-tenant-one-match"
+        });
+        var tenantOneOther = await tenantOne.Parents.InsertAsync(new GlobalFilterParent
+        {
+            TenantId = 1,
+            Name = marker + "-tenant-one-other"
+        });
+        var tenantTwoMatch = await tenantOne.Parents.InsertAsync(new GlobalFilterParent
+        {
+            TenantId = 2,
+            Name = marker + "-tenant-two-match"
+        });
+
+        _ = await tenantOne.Children.InsertManyReturningAsync(
+        [
+            new GlobalFilterChild
+            {
+                ParentId = tenantOneMatch.Id,
+                TenantId = 1,
+                Name = marker + "-candidate"
+            },
+            new GlobalFilterChild
+            {
+                ParentId = tenantOneMatch.Id,
+                TenantId = 1,
+                Name = marker + "-qualifier"
+            },
+            new GlobalFilterChild
+            {
+                ParentId = tenantOneOther.Id,
+                TenantId = 1,
+                Name = marker + "-candidate"
+            },
+            new GlobalFilterChild
+            {
+                ParentId = tenantOneOther.Id,
+                TenantId = 1,
+                IsDeleted = true,
+                Name = marker + "-qualifier"
+            },
+            new GlobalFilterChild
+            {
+                ParentId = tenantTwoMatch.Id,
+                TenantId = 2,
+                Name = marker + "-candidate"
+            },
+            new GlobalFilterChild
+            {
+                ParentId = tenantTwoMatch.Id,
+                TenantId = 2,
+                Name = marker + "-qualifier"
+            }
+        ]);
+
+        var candidateChildren = tenantOne.Children.Where(child =>
+            child.Name == candidateName &&
+            tenantOne.Children.Any(inner =>
+                inner.ParentId == child.ParentId &&
+                inner.Name == qualifierName));
+
+        var capturedQuery = tenantOne.Parents
+            .Where(parent => candidateChildren.Any(child => child.ParentId == parent.Id))
+            .OrderBy(parent => parent.Id)
+            .Skip(0)
+            .Take(1);
+
+        Assert.Equal(1, await capturedQuery.CountAsync());
+        var capturedPage = await capturedQuery.ToListAsync();
+        Assert.Equal(tenantOneMatch.Id, Assert.Single(capturedPage).Id);
+
+        var inlineQuery = tenantOne.Parents
+            .Where(parent => tenantOne.Children
+                .Where(child => child.Name == candidateName)
+                .Any(child => child.ParentId == parent.Id &&
+                    tenantOne.Children.Any(inner =>
+                        inner.ParentId == child.ParentId &&
+                        inner.Name == qualifierName)))
+            .OrderBy(parent => parent.Id)
+            .Skip(0)
+            .Take(1);
+
+        Assert.Equal(1, await inlineQuery.CountAsync());
+        Assert.Equal(tenantOneMatch.Id, Assert.Single(await inlineQuery.ToListAsync()).Id);
+
+        await using var tenantTwo = new GlobalFilterDbContext(fixture.ConnectionString, schema, tenantId: 2);
+        var tenantTwoQuery = tenantTwo.Parents
+            .Where(parent => tenantTwo.Children.Any(child =>
+                child.Name == candidateName &&
+                child.ParentId == parent.Id &&
+                tenantTwo.Children.Any(inner =>
+                    inner.ParentId == child.ParentId &&
+                    inner.Name == qualifierName)))
+            .OrderBy(parent => parent.Id)
+            .Skip(0)
+            .Take(1);
+
+        Assert.Equal(1, await tenantTwoQuery.CountAsync());
+        Assert.Equal(tenantTwoMatch.Id, Assert.Single(await tenantTwoQuery.ToListAsync()).Id);
+    }
 }
 
 public sealed class GlobalFilterDbContext : DbContext

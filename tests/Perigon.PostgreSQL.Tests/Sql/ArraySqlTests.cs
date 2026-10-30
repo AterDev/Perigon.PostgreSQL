@@ -74,6 +74,44 @@ public sealed class ArraySqlTests
     }
 
     [Fact]
+    public void Array_any_string_contains_translates_to_unnest_exists()
+    {
+        using var db = new TestDbContext();
+        var search = "post";
+
+        var sql = db.RichUsers.Where(u => u.Tags!.Any(tag => tag.Contains(search))).ToQuerySql();
+
+        Assert.Contains("EXISTS (SELECT 1 FROM unnest(e.\"tags\") AS p(\"value\") WHERE p.\"value\" LIKE $1 ESCAPE '\\')", sql.CommandText);
+        Assert.Equal("%post%", sql.Parameters[0].Value);
+    }
+
+    [Fact]
+    public void Array_any_string_starts_and_ends_with_translate_to_like()
+    {
+        using var db = new TestDbContext();
+        var value = "_tag";
+
+        var startsWith = db.RichUsers.Where(u => u.Tags!.Any(tag => tag.StartsWith(value))).ToQuerySql();
+        var endsWith = db.RichUsers.Where(u => u.Tags!.Any(tag => tag.EndsWith(value))).ToQuerySql();
+
+        Assert.Contains("LIKE $1 ESCAPE '\\'", startsWith.CommandText);
+        Assert.Equal("\\_tag%", startsWith.Parameters[0].Value);
+        Assert.Contains("LIKE $1 ESCAPE '\\'", endsWith.CommandText);
+        Assert.Equal("%\\_tag", endsWith.Parameters[0].Value);
+    }
+
+    [Fact]
+    public void Array_any_string_contains_empty_value_is_parameterized()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers.Where(u => u.Tags!.Any(tag => tag.Contains(""))).ToQuerySql();
+
+        Assert.Contains("LIKE $1 ESCAPE '\\'", sql.CommandText);
+        Assert.Equal("%%", sql.Parameters[0].Value);
+    }
+
+    [Fact]
     public void Array_all_equality_predicate_translates_to_not_exists_unnest()
     {
         using var db = new TestDbContext();

@@ -8,7 +8,7 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <PackageId>Perigon.PostgreSQL</PackageId>
     <Title>Perigon.PostgreSQL</Title>
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
     <Authors>Niltor</Authors>
     <Company>AterDev</Company>
     <Description>PostgreSQL-only NativeAOT-friendly data access library with deterministic SQL, LINQ
@@ -20,7 +20,7 @@
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageIcon>perigon_logo.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>0.2.1 adds named query filters, client-generated timestamps and GUID v7 keys, and configurable transaction isolation. See RELEASE_NOTES.md for details.</PackageReleaseNotes>
+    <PackageReleaseNotes>0.2.2 adds string-array Any pattern matching with database-side paging. See RELEASE_NOTES.md for details.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

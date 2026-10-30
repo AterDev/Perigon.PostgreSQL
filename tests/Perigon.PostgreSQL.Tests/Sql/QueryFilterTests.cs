@@ -66,6 +66,35 @@ public sealed class QueryFilterTests
     }
 
     [Fact]
+    public void Correlated_any_keeps_query_filters_and_outer_aliases()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        int[] allowedOwners = [11, 12];
+
+        var visiblePosts = db.Posts.Where(post =>
+            allowedOwners.Contains(post.OwnerId) &&
+            db.Posts.Any(inner => inner.OwnerId == post.OwnerId));
+
+        var sql = db.Owners
+            .Where(owner => visiblePosts.Any(post => post.OwnerId == owner.Id))
+            .OrderByDescending(owner => owner.Id)
+            .Skip(3)
+            .Take(2)
+            .ToQuerySql();
+
+        Assert.Contains("EXISTS (SELECT 1 FROM \"filter_posts\" AS s", sql.CommandText);
+        Assert.Contains("EXISTS (SELECT 1 FROM \"filter_posts\" AS ss", sql.CommandText);
+        Assert.Contains("s.\"owner_id\" IS NOT DISTINCT FROM e.\"id\"", sql.CommandText);
+        Assert.Contains("ss.\"owner_id\" IS NOT DISTINCT FROM s.\"owner_id\"", sql.CommandText);
+        Assert.Contains("s.\"owner_id\" = ANY", sql.CommandText);
+        Assert.Equal(3, sql.CommandText.Split("\"tenant_id\"", StringSplitOptions.None).Length - 1);
+        Assert.Equal(3, sql.CommandText.Split("\"is_deleted\"", StringSplitOptions.None).Length - 1);
+        Assert.Contains("ORDER BY e.\"id\" DESC LIMIT", sql.CommandText);
+        Assert.Contains("OFFSET", sql.CommandText);
+        Assert.Equal(5, sql.Parameters.Count);
+    }
+
+    [Fact]
     public void Include_child_query_keeps_child_global_filters()
     {
         using var db = new FilterDbContext(tenantId: 7);

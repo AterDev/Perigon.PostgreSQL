@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.2.2
+
+- Added SQL translation for string-array Any predicates using Contains, StartsWith, and EndsWith, with escaped, parameterized LIKE patterns and database-side paging.
+- Added PostgreSQL integration coverage for array matching and nested correlated queries with tenant and soft-delete filters.
+- Aligned the migration and scaffolding tool package with the runtime release.
+
 ## 0.2.1
 
 - Added named global query filters for structured queries and updates/deletes, including filtered navigation loading and explicit per-query filter bypass.
