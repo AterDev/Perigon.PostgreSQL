@@ -7,6 +7,128 @@ namespace Perigon.PostgreSQL.Tests.Sql;
 public sealed class QueryFilterTests
 {
     [Fact]
+    public void Queries_created_in_an_ignored_filter_scope_expire_with_the_scope()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        DbSet<FilterRow> scopedSet;
+        IQueryable<FilterRow> scopedQuery;
+        using (((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["Tenant"])))
+        {
+            scopedSet = db.Rows;
+            scopedQuery = scopedSet.Where(row => row.Id > 0);
+            Assert.DoesNotContain(scopedQuery.ToQuerySql().Parameters, parameter => Equals(parameter.Value, 7));
+        }
+
+        Assert.Throws<InvalidOperationException>(() => scopedSet.ToQuerySql());
+        Assert.Throws<InvalidOperationException>(() => scopedQuery.ToQuerySql());
+        Assert.Contains(db.Rows.ToQuerySql().Parameters, parameter => Equals(parameter.Value, 7));
+    }
+
+    [Fact]
+    public async Task Ignored_filter_scope_cannot_escape_into_a_delayed_child_task()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<Exception> child;
+        using (((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["Tenant"])))
+        {
+            var query = db.Rows.Where(row => row.Id > 0);
+            child = Task.Run(async () =>
+            {
+                ready.SetResult();
+                await resume.Task;
+                return Record.Exception(() => query.ToQuerySql());
+            });
+            await ready.Task;
+        }
+        resume.SetResult();
+        Assert.IsType<InvalidOperationException>(await child);
+    }
+
+    [Fact]
+    public void Nested_filter_scopes_keep_outer_queries_valid_only_while_their_scope_is_active()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        using (((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["Tenant"])))
+        {
+            var outer = db.Rows;
+            using (((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["SoftDelete"])))
+            {
+                _ = outer.ToQuerySql();
+                var inner = db.Rows.ToQuerySql();
+                Assert.DoesNotContain(inner.Parameters, parameter => Equals(parameter.Value, 7));
+                Assert.DoesNotContain("NOT", inner.CommandText);
+            }
+            _ = outer.ToQuerySql();
+        }
+    }
+
+    [Fact]
+    public void Explicit_unfiltered_set_is_not_bound_to_an_ambient_scope()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        DbSet<FilterRow> unfiltered;
+        DbSet<FilterRow> partiallyFiltered;
+        using (((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["Tenant"])))
+        {
+            unfiltered = db.SetIgnoringAllFilters<FilterRow>();
+            partiallyFiltered = db.SetWithoutFilters<FilterRow>("SoftDelete");
+        }
+        _ = unfiltered.ToQuerySql();
+        Assert.Throws<InvalidOperationException>(() => partiallyFiltered.ToQuerySql());
+    }
+
+    [Fact]
+    public void Filter_scope_snapshots_the_supplied_names()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        var names = new HashSet<string>(["SoftDelete"]);
+        using var scope = ((IQueryFilterContext)db).PushIgnoredFilters(names);
+        names.Add("Tenant");
+        Assert.Contains(db.Rows.ToQuerySql().Parameters, parameter => Equals(parameter.Value, 7));
+    }
+
+    [Fact]
+    public void Disposing_filter_scopes_out_of_order_invalidates_children_and_restores_normal_queries()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        var outer = ((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["Tenant"]));
+        var inner = ((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["SoftDelete"]));
+        outer.Dispose();
+        Assert.Throws<InvalidOperationException>(() => db.Rows.ToQuerySql());
+        inner.Dispose();
+        Assert.Contains(db.Rows.ToQuerySql().Parameters, parameter => Equals(parameter.Value, 7));
+    }
+
+    [Fact]
+    public async Task Scope_bound_query_cannot_be_used_without_its_execution_context()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        using var scope = ((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["Tenant"]));
+        var query = db.Rows.Where(row => row.Id > 0);
+        Task<Exception> child;
+        using (ExecutionContext.SuppressFlow())
+            child = Task.Run(() => Record.Exception(() => query.ToQuerySql()));
+        Assert.IsType<InvalidOperationException>(await child);
+    }
+
+    [Fact]
+    public void Join_cannot_escape_through_an_unscoped_outer_provider()
+    {
+        using var db = new FilterDbContext(tenantId: 7);
+        var outer = db.Rows;
+        IQueryable<int> joined;
+        using (((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["Tenant"])))
+        {
+            var inner = db.Rows;
+            joined = outer.Join(inner, left => left.Id, right => right.Id, (left, right) => left.Id);
+            _ = joined.ToSql();
+        }
+        Assert.Throws<InvalidOperationException>(() => joined.ToSql());
+    }
+
+    [Fact]
     public void Filters_are_registered_without_generated_context_metadata()
     {
         using var db = new FallbackFilterDbContext();

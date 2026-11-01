@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.3.0
+
+- Added opt-in scoped `DbContext` pooling, with bounded idle retention, lease-aware query invalidation, and an optional `OnPoolReturn` hook; applications must reset their own mutable request and tenant state.
+- Cached stable model configuration per context and indexed entity lookups while preserving per-context query filters and tenant state.
+- Prevented queries that inherit a temporary ignored-filter scope from escaping that scope, including across asynchronous execution contexts.
+- Added idempotent Npgsql OpenTelemetry tracing and metrics registration, automatic DI logger integration, and documented connection and pooling options.
+- Added real PostgreSQL isolation, concurrency, transaction and telemetry coverage, NativeAOT smoke tests, and reproducible model and HTTP benchmarks.
+- Aligned the migration and scaffolding tool package with the runtime release.
+
 ## 0.2.2
 
 - Added SQL translation for string-array Any predicates using Contains, StartsWith, and EndsWith, with escaped, parameterized LIKE patterns and database-side paging.

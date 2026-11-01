@@ -8,6 +8,26 @@ namespace Perigon.PostgreSQL.IntegrationTests;
 public sealed class GlobalQueryFilterIntegrationTests(DockerPostgresFixture fixture)
 {
     [Fact]
+    public async Task Query_with_ambient_ignored_tenant_filter_cannot_execute_after_scope_ends()
+    {
+        var schema = fixture.CreateIsolatedSchema("global_filter_scope_expiry");
+        await using var db = new GlobalFilterDbContext(fixture.ConnectionString, schema, tenantId: 1);
+        await db.EnsureCreatedAsync();
+        await db.Parents.InsertAsync(new GlobalFilterParent { TenantId = 1, Name = "scope-one" });
+        await db.Parents.InsertAsync(new GlobalFilterParent { TenantId = 2, Name = "scope-two" });
+
+        IQueryable<GlobalFilterParent> scopedQuery;
+        using (((IQueryFilterContext)db).PushIgnoredFilters(new HashSet<string>(["Tenant"])))
+        {
+            scopedQuery = db.Parents.Where(parent => parent.Name.StartsWith("scope-"));
+            Assert.Equal(2, (await scopedQuery.ToListAsync()).Count);
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => scopedQuery.ToListAsync());
+        Assert.Single(await db.Parents.Where(parent => parent.Name.StartsWith("scope-")).ToListAsync());
+    }
+
+    [Fact]
     public async Task Named_filters_isolate_tenants_and_bound_update_and_delete()
     {
         var schema = fixture.CreateIsolatedSchema("global_filters_crud");

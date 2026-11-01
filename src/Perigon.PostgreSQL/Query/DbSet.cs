@@ -13,6 +13,10 @@ internal interface IEntityModelSource
 public sealed class DbSet<T> : IOrderedQueryable<T>, IEntityModelSource, IQueryFilterSource where T : class
 {
     private readonly PostgresQueryProvider _provider;
+    private readonly DbContext _context;
+    private readonly EntityModel _model;
+    private readonly Expression _expression;
+    private readonly IReadOnlySet<string> _ignoredFilters;
 
     internal DbSet(DbContext context, EntityModel model)
         : this(context, model, applyFilters: true)
@@ -21,52 +25,57 @@ public sealed class DbSet<T> : IOrderedQueryable<T>, IEntityModelSource, IQueryF
 
     internal DbSet(DbContext context, EntityModel model, bool applyFilters)
     {
-        Context = context;
-        Model = model;
-        IgnoredFilters = applyFilters
+        _context = context;
+        _model = model;
+        var filterScope = applyFilters ? context.CaptureFilterScope() : null;
+        _ignoredFilters = applyFilters
             ? new HashSet<string>(StringComparer.Ordinal)
             : new HashSet<string>(["*"], StringComparer.Ordinal);
         var root = Expression.Constant(this);
-        Expression = applyFilters && context is IQueryFilterContext filters
+        _expression = applyFilters && context is IQueryFilterContext filters
             ? filters.ApplyQueryFilters(typeof(T), root)
             : root;
-        _provider = new PostgresQueryProvider(context);
+        _provider = new PostgresQueryProvider(context, filterScope);
     }
 
     internal DbSet(DbContext context, EntityModel model, IReadOnlySet<string> ignoredFilters)
     {
-        Context = context;
-        Model = model;
-        IgnoredFilters = ignoredFilters;
+        _context = context;
+        _model = model;
+        var filterScope = context.CaptureFilterScope();
+        _ignoredFilters = ignoredFilters;
         var root = Expression.Constant(this);
-        Expression = context is IQueryFilterContext filters
+        _expression = context is IQueryFilterContext filters
             ? filters.ApplyQueryFilters(typeof(T), root, ignoredFilters)
             : root;
-        _provider = new PostgresQueryProvider(context);
+        _provider = new PostgresQueryProvider(context, filterScope);
     }
 
     internal DbSet(DbContext context, EntityModel model, Expression expression)
     {
-        Context = context;
-        Model = model;
-        IgnoredFilters = new HashSet<string>(StringComparer.Ordinal);
-        Expression = expression;
-        _provider = new PostgresQueryProvider(context);
+        _context = context;
+        _model = model;
+        var filterScope = context.CaptureFilterScope();
+        _ignoredFilters = new HashSet<string>(StringComparer.Ordinal);
+        _expression = expression;
+        _provider = new PostgresQueryProvider(context, filterScope);
     }
 
-    public DbContext Context { get; }
+    public DbContext Context { get { ValidateLease(); return _context; } }
 
-    public EntityModel Model { get; }
+    public EntityModel Model { get { ValidateLease(); return _model; } }
 
     IReadOnlySet<string> IQueryFilterSource.IgnoredFilters => IgnoredFilters;
 
-    internal IReadOnlySet<string> IgnoredFilters { get; }
+    internal IReadOnlySet<string> IgnoredFilters { get { ValidateLease(); return _ignoredFilters; } }
 
     public Type ElementType => typeof(T);
 
-    public Expression Expression { get; }
+    public Expression Expression { get { ValidateLease(); return _expression; } }
 
-    public IQueryProvider Provider => _provider;
+    public IQueryProvider Provider { get { ValidateLease(); return _provider; } }
+
+    private void ValidateLease() => _provider.ValidateLease();
 
     public IEnumerator<T> GetEnumerator()
     {

@@ -6,6 +6,59 @@ using Perigon.PostgreSQL.Migrations;
 using Perigon.PostgreSQL.NativeAotSmoke;
 using Perigon.PostgreSQL.RawSql;
 using System.Linq.Expressions;
+using System.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
+
+var telemetryServices = new ServiceCollection();
+telemetryServices.AddDbContext<SmokeDbContext>(_ => { }, registration => registration.EnableOpenTelemetry = true);
+using (var telemetryProvider = telemetryServices.BuildServiceProvider())
+{
+    _ = telemetryProvider.GetRequiredService<TracerProvider>();
+    _ = telemetryProvider.GetRequiredService<MeterProvider>();
+    using var activitySource = new ActivitySource("Npgsql");
+    using var activity = activitySource.StartActivity("perigon-aot-smoke");
+    if (activity is null)
+        throw new InvalidOperationException("NativeAOT smoke test expected Npgsql tracing to be enabled.");
+}
+
+var pooledServices = new ServiceCollection();
+pooledServices.AddDbContextPool<SmokePooledContext>(options =>
+    options.UseNpgsql("Host=localhost;Database=perigon_aot;Username=postgres"), poolSize: 1);
+using (var pooledProvider = pooledServices.BuildServiceProvider())
+{
+    SmokePooledContext first;
+    DbSet<SmokeUser> oldSet;
+    using (var scope = pooledProvider.CreateScope())
+    {
+        first = scope.ServiceProvider.GetRequiredService<SmokePooledContext>();
+        first.MinimumAge = 7;
+        oldSet = first.Users;
+        _ = oldSet.ToQuerySql();
+        IQueryable<SmokeUser> unfilteredQuery;
+        using (((IQueryFilterContext)first).PushIgnoredFilters(new HashSet<string> { "MinimumAge" }))
+        {
+            unfilteredQuery = first.Users.Where(user => user.Age > 1);
+            _ = unfilteredQuery.ToQuerySql();
+        }
+        var expired = false;
+        try { _ = unfilteredQuery.ToQuerySql(); }
+        catch (InvalidOperationException) { expired = true; }
+        if (!expired)
+            throw new InvalidOperationException("NativeAOT smoke test expected the filter scope to expire.");
+    }
+    using var nextScope = pooledProvider.CreateScope();
+    var reused = nextScope.ServiceProvider.GetRequiredService<SmokePooledContext>();
+    if (!ReferenceEquals(first, reused) || reused.MinimumAge != 0)
+        throw new InvalidOperationException("NativeAOT smoke test expected pooled context reuse.");
+    try
+    {
+        _ = oldSet.ToQuerySql();
+        throw new InvalidOperationException("NativeAOT smoke test expected old pooled DbSets to be invalid.");
+    }
+    catch (ObjectDisposedException) { }
+}
 
 if (!EntityModel.For<SmokeUser>().IsGenerated)
 {

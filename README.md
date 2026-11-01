@@ -115,6 +115,8 @@ var tenantIncludingDeleted = await db
 var allTenants = await db.SetIgnoringAllFilters<User>().ToListAsync();
 ```
 
+使用 `IQueryFilterContext.PushIgnoredFilters(...)` 建立临时过滤器范围时，受该范围影响而创建的查询必须在范围内执行；离开范围后继续使用会抛出异常。嵌套范围会合并需要忽略的名称。显式调用 `SetIgnoringAllFilters<T>()` 创建的查询不受临时范围的生命周期限制。
+
 过滤器只约束查询，不替代写入授权：使用 `InsertAsync`、`BulkInsertAsync` 或其他写入
 API 时，租户字段的赋值与校验由应用负责。`SqlQuery`、`SqlCommand` 和其他原生 SQL
 不会自动追加全局过滤条件，必须在 SQL 中自行写出租户、软删除等条件。
@@ -324,9 +326,78 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres")!));
 ```
 
+也可以在注册时同时配置常用数据库选项和 OpenTelemetry：
+
+```csharp
+builder.Services.AddDbContext<AppDbContext>(
+    options => options
+        .UseNpgsql(builder.Configuration.GetConnectionString("Postgres")!)
+        .UseConnectionTimeout(TimeSpan.FromSeconds(5))
+        .UseCommandTimeout(TimeSpan.FromSeconds(30))
+        .EnableConnectionPooling()
+        .UseMinPoolSize(0)
+        .UseMaxPoolSize(100),
+    registration => registration.EnableOpenTelemetry = true);
+```
+
+连接与命令超时按秒向上取整，零表示不设超时。上述配置写入由本库创建的数据源的连接字符串；传入已有 `NpgsqlDataSource` 时，连接超时和连接池须在创建该数据源时配置。命令超时对普通查询、写入和 Raw SQL 的命令也单独设置；使用外部数据源的建表与迁移命令使用该数据源的默认命令超时。Bulk COPY 使用 `BulkInsertOptions.Timeout`。
+
+通过 DI 创建的上下文自动使用容器中的 `ILoggerFactory`，也可用 `UseLoggerFactory(...)` 覆盖。普通查询和写入的执行与完成日志使用 `Debug`，失败日志使用 `Error`，分类为 `Perigon.PostgreSQL`；通过应用的日志配置选择输出目标与级别。参数值默认隐藏，只有调用 `EnableSensitiveLogging()` 才会记录。SQL 文本本身以及数据库异常可能包含敏感信息。建表、迁移和 COPY 不经过上述命令日志路径。
+
 `AddDbContext` 会在容器中按生效的连接字符串复用单例 `NpgsqlDataSource`，并在容器释放时释放它。这样每个 scoped `DbContext` 不会重复创建和销毁连接池。多租户场景如果每个请求都会产生新的连接字符串，会让数据源缓存随连接字符串数量增长；此时应在应用层按租户管理有限数量的 `NpgsqlDataSource`，再通过 `UseNpgsql(dataSource)` 注入，而不是为每个请求拼接新的连接字符串。
 
 直接使用 `new AppDbContext(connectionString)` 仍由上下文自行创建和释放数据源，适合短期工具、迁移和脚本。长时间运行的服务应注册并共享一个 `NpgsqlDataSource`，或使用上面的 DI 注册方式。
+
+### DbContext 池
+
+`AddDbContextPool` 可在不同请求之间复用上下文实例和该实例已构建的模型：
+
+```csharp
+builder.Services.AddDbContextPool<AppDbContext>(
+    options => options.UseNpgsql(builder.Configuration.GetConnectionString("Postgres")!),
+    poolSize: 128);
+
+public sealed class AppDbContext(DbContextOptions<AppDbContext> options)
+    : DbContext(options)
+{
+    public DbSet<User> Users => Set<User>();
+
+    // 无自定义请求状态时，不需要覆盖 OnPoolReturn。
+}
+```
+
+`DbContextOptions<TContext>` 位于 `Perigon.PostgreSQL.Options` 命名空间。池大小限制**保留的空闲实例数**，不是并发请求数；池中无空闲实例时会创建新实例，池满时归还的实例会被释放。每个请求仍使用自己的 scoped 上下文，不能并发使用同一个实例。也可传入第二个注册选项委托，使用 `registration.EnableOpenTelemetry = true`。
+
+池化上下文不再强制实现 `IPooledDbContext`。`DbContext` 基类提供默认空实现的 `protected virtual OnPoolReturn()`；没有自定义请求状态时无需覆盖它。上下文确实持有租户、用户、缓存引用等可变状态时，应在每次租用后由应用显式赋值，并在归还池时清理：
+
+```csharp
+public sealed class TenantDbContext(DbContextOptions<TenantDbContext> options)
+    : DbContext(options)
+{
+    public int? TenantId { get; set; }
+
+    protected override void OnPoolReturn()
+        => TenantId = null;
+}
+```
+
+属性初始化器或构造函数中的默认值只在实例首次创建时执行，不能当作每次从池租用时的重置；仅将 `TenantId` 声明为可空或设置默认值，仍可能把上一租约的值带入下一请求。全局过滤器应引用上下文属性（例如 `row => row.TenantId == TenantId`），每次租用后先设置当前租户，再开始查询。若子类自行缓存 `DbSet` 字段，也必须在 `OnPoolReturn()` 中清空该字段。配置和 Fluent 模型在池生命周期内必须稳定；只能有一个公开构造函数，且只接收 `DbContextOptions<TContext>`，避免长期持有 scoped 服务；不能用池配置委托按请求切换连接字符串。
+
+旧代码实现 `IPooledDbContext.ResetState()` 仍可继续使用，作为兼容性钩子会在归还池时调用；新代码优先覆盖 `OnPoolReturn()`。如果两者都实现，两个钩子都会执行，均不得在其中启动数据库操作或保留上一租约的状态。
+
+池化上下文的全局查询过滤器不能捕获局部对象或局部变量，否则会在构建模型时直接报错。请求相关属性必须在每次租用后设置，并在归还时通过 `OnPoolReturn()`（或兼容的 `ResetState()`）清除。
+
+同一租约内会缓存 `DbSet`；归还池时清除这些包装对象，新租约使用重新绑定的 `DbSet`，稳定模型继续复用。旧的 `DbSet`、查询及 Raw SQL 对象不能跨 scope 使用。上下文本身也不能保存到 scope 外：由于实例会被重新租用，旧的上下文引用无法与新租约区分。手动释放上下文后，它仍会等到所属 scope 结束才归还池；应在结束 scope 前等待所有数据库操作，并在所有 scope 结束后再释放根容器。
+
+### OpenTelemetry 与 Aspire
+
+核心包包含 OpenTelemetry 集成。可以使用上面的 `AddDbContext` 注册选项，或在应用启动时单独调用一次：
+
+```csharp
+builder.Services.AddPerigonPostgreSqlOpenTelemetry();
+```
+
+该方法订阅 Npgsql 的追踪源和指标源，适用于连接字符串创建的数据源以及通过 `UseNpgsql(dataSource)` 传入的数据源。它与 `AddDbContext` 分开注册，因此不需要时不会启用采集；也不会自行配置导出器。多次调用本库的注册入口只会注册一次；若已有 Aspire Npgsql 客户端集成并启用了追踪与指标，无需再次调用此方法。使用 Aspire 时，继续使用服务默认配置中的 OpenTelemetry 和 OTLP 导出；其他应用需自行配置 OpenTelemetry 导出器。SQL 文本和自定义遥测配置可能包含敏感信息，请按应用需要配置采集与访问权限。
 
 ## 示例项目
 

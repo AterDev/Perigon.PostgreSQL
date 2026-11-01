@@ -25,6 +25,9 @@ public sealed class TransactionOptions
 public abstract partial class DbContext : IDisposable, IAsyncDisposable
 {
     private readonly Dictionary<Type, object> _sets = [];
+    private IReadOnlyList<EntityModel>? _entityModels;
+    private Dictionary<Type, EntityModel>? _entityModelsByType;
+    private ModelBuilder? _modelBuilder;
     private readonly DbContextOptions _options;
     private readonly object _dataSourceSync = new();
     private readonly SemaphoreSlim _operationGate = new(1, 1);
@@ -33,6 +36,9 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
     private NpgsqlConnection? _transactionConnection;
     private NpgsqlTransaction? _transaction;
     private int _disposed;
+    private int _poolAttached;
+    private bool _poolPoisoned;
+    private long _poolLeaseVersion;
 
     protected DbContext()
     {
@@ -61,6 +67,18 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
     }
 
     protected virtual void OnModelCreating(ModelBuilder modelBuilder)
+    {
+    }
+
+    /// <summary>
+    /// Resets application-owned state before this context is returned to a context pool.
+    /// </summary>
+    /// <remarks>
+    /// The default implementation is empty. Override this hook when the context stores
+    /// mutable state such as a tenant identifier. The hook must not start database
+    /// operations or retain state that belongs to the previous lease.
+    /// </remarks>
+    protected virtual void OnPoolReturn()
     {
     }
 
@@ -220,7 +238,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
     /// <summary>Returns the final schema model after source-generated metadata and OnModelCreating have been applied.</summary>
     public MigrationModel GetMigrationModel()
     {
-        ThrowIfDisposed();
+        using var operation = EnterOperation();
         return MigrationModel.FromEntityModels(GetEntityModels());
     }
 
@@ -298,10 +316,29 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
 
     protected virtual IReadOnlyList<EntityModel> GetEntityModels()
     {
-        var models = EntityModelRegistry.GetContextModels(GetType());
-        var builder = new ModelBuilder();
-        OnModelCreating(builder);
-        return builder.Apply(models);
+        if (_entityModels is not null)
+        {
+            return _entityModels;
+        }
+
+        try
+        {
+            var models = EntityModelRegistry.GetContextModels(GetType());
+            var builder = new ModelBuilder();
+            OnModelCreating(builder);
+            var configured = builder.Apply(models);
+            var modelsByType = configured.ToDictionary(static model => model.ClrType);
+            _modelBuilder = builder;
+            _entityModels = configured;
+            _entityModelsByType = modelsByType;
+            return configured;
+        }
+        catch
+        {
+            if (Volatile.Read(ref _poolAttached) != 0)
+                _poolPoisoned = true;
+            throw;
+        }
     }
 
     internal string MigrationHistorySchema => _options.MigrationHistorySchema;
@@ -482,13 +519,100 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
     {
         ThrowIfDisposed();
-        var configured = GetEntityModels().FirstOrDefault(item => item.ClrType == entityType);
-        if (configured is not null)
+        var models = GetEntityModels();
+        var modelsByType = _entityModelsByType ??= models.ToDictionary(static model => model.ClrType);
+        if (modelsByType.TryGetValue(entityType, out var configured))
+        {
             return configured;
+        }
 
-        var builder = new ModelBuilder();
-        OnModelCreating(builder);
-        return builder.Apply([EntityModel.For(entityType)])[0];
+        var builder = _modelBuilder;
+        if (builder is null)
+        {
+            builder = new ModelBuilder();
+            OnModelCreating(builder);
+            _modelBuilder = builder;
+        }
+
+        var fallback = builder.Apply([EntityModel.For(entityType)])[0];
+        modelsByType[entityType] = fallback;
+        return fallback;
+    }
+
+    internal void AttachPool()
+    {
+        if (_sets.Count != 0 || _unfilteredSets.Count != 0 || _entityModels is not null ||
+            _modelBuilder is not null || _queryFilters.Count != 0)
+            throw new InvalidOperationException("A pooled context must not initialize models, filters or DbSets in its constructor; use expression-bodied DbSet properties.");
+        Volatile.Write(ref _poolAttached, 1);
+        Interlocked.Increment(ref _poolLeaseVersion);
+    }
+
+    internal void BeginPoolLease()
+    {
+        Interlocked.Increment(ref _poolLeaseVersion);
+        Volatile.Write(ref _disposed, 0);
+    }
+
+    internal long CapturePoolLease() => Volatile.Read(ref _poolLeaseVersion);
+
+    internal void ValidatePoolLease(long version)
+    {
+        if (Volatile.Read(ref _poolAttached) != 0 &&
+            (Volatile.Read(ref _disposed) != 0 || Volatile.Read(ref _poolLeaseVersion) != version))
+            throw new ObjectDisposedException(GetType().Name, "The context pool lease that created this object has ended.");
+    }
+
+    internal bool ResetForPool()
+    {
+        if (!_operationGate.Wait(0))
+            return false;
+
+        try
+        {
+            if (_poolPoisoned || _transaction is not null || _transactionConnection is not null)
+                return false;
+            OnPoolReturn();
+            if (this is IPooledDbContext legacyPoolContext)
+                legacyPoolContext.ResetState();
+            _sets.Clear();
+            _unfilteredSets.Clear();
+            _ambientOperation.Value = null;
+            _ambientIgnoredFilters.Value = null;
+            return true;
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
+    }
+
+    internal void DestroyPooledWhenIdle()
+    {
+        if (_operationGate.Wait(0))
+        {
+            _operationGate.Release();
+            DestroyPooledResources();
+            return;
+        }
+
+        _ = DestroyPooledWhenIdleAsync();
+    }
+
+    private async Task DestroyPooledWhenIdleAsync()
+    {
+        await _operationGate.WaitAsync().ConfigureAwait(false);
+        _operationGate.Release();
+        DestroyPooledResources();
+    }
+
+    private void DestroyPooledResources()
+    {
+        _transaction?.Dispose();
+        _transactionConnection?.Dispose();
+        _ownedDataSource?.Dispose();
+        _ownedDataSource = null;
+        _operationGate.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -497,6 +621,9 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         {
             return;
         }
+
+        if (Volatile.Read(ref _poolAttached) != 0)
+            return;
 
         if (_transaction is not null)
         {
@@ -530,6 +657,9 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
             return;
         }
 
+        if (Volatile.Read(ref _poolAttached) != 0)
+            return;
+
         _transaction?.Dispose();
         _transactionConnection?.Dispose();
         NpgsqlDataSource? ownedDataSource;
@@ -549,6 +679,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         var ambient = _ambientOperation.Value;
         if (ambient is not null && ReferenceEquals(ambient.Context, this))
         {
+            ValidatePoolLease(ambient.LeaseVersion);
             if (!ambient.IsTransaction)
             {
                 throw new InvalidOperationException(
@@ -578,8 +709,9 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
     private IDisposable EnterTransactionOperation()
     {
         ThrowIfDisposed();
-        if (_ambientOperation.Value is not null)
+        if (_ambientOperation.Value is { } ambient)
         {
+            ValidatePoolLease(ambient.LeaseVersion);
             throw new InvalidOperationException("Nested transactions are not supported.");
         }
 
@@ -597,6 +729,12 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
+        if (Volatile.Read(ref _poolAttached) != 0)
+        {
+            if (_ambientOperation.Value is { } operation)
+                ValidatePoolLease(operation.LeaseVersion);
+            _ = GetAmbientIgnoredFilters();
+        }
     }
 
     private sealed class OperationState
@@ -605,11 +743,14 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         {
             Context = context;
             IsTransaction = isTransaction;
+            LeaseVersion = context.CapturePoolLease();
         }
 
         public DbContext Context { get; }
 
         public bool IsTransaction { get; }
+
+        public long LeaseVersion { get; }
 
         public int ActiveCommand;
     }

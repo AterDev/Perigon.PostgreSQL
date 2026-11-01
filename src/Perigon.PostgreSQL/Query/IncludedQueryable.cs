@@ -13,20 +13,23 @@ internal interface IIncludedQuery<T> where T : class
 internal sealed class IncludedQueryable<T> : IOrderedQueryable<T>, IIncludedQuery<T> where T : class
 {
     private readonly IReadOnlyDictionary<string, Func<DbContext, List<T>, CancellationToken, Task>> _loaders;
+    private readonly PostgresQueryProvider _provider;
+    private readonly Expression _expression;
+    private readonly IQueryProvider _includeProvider;
 
     internal IncludedQueryable(PostgresQueryProvider provider, Expression expression,
         IReadOnlyDictionary<string, Func<DbContext, List<T>, CancellationToken, Task>> loaders)
     {
-        Expression = expression;
+        _provider = provider;
+        _expression = expression;
         _loaders = loaders;
-        Provider = new IncludeQueryProvider<T>(provider, loaders);
-        Context = provider.Context;
+        _includeProvider = new IncludeQueryProvider<T>(provider, loaders);
     }
 
     public Type ElementType => typeof(T);
-    public Expression Expression { get; }
-    public IQueryProvider Provider { get; }
-    public DbContext Context { get; }
+    public Expression Expression { get { _provider.ValidateLease(); return _expression; } }
+    public IQueryProvider Provider { get { _provider.ValidateLease(); return _includeProvider; } }
+    public DbContext Context => _provider.Context;
     internal IReadOnlyDictionary<string, Func<DbContext, List<T>, CancellationToken, Task>> Loaders => _loaders;
     public IEnumerator<T> GetEnumerator() => throw new NotSupportedException("Synchronous query execution is not supported.");
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
@@ -55,6 +58,7 @@ internal sealed class IncludeQueryProvider<T> : IQueryProvider, IIncludeProvider
     public IQueryable CreateQuery(Expression expression) => throw new NotSupportedException("Non-generic query creation is not supported in NativeAOT mode.");
     public IQueryable<TElement> CreateQuery<TElement>(Expression expression)
     {
+        _inner.ValidateLease();
         if (typeof(TElement) != typeof(T) || expression is not MethodCallExpression call ||
             call.Method.DeclaringType != typeof(Queryable) || call.Method.Name is not
                 (nameof(Queryable.Where) or nameof(Queryable.OrderBy) or nameof(Queryable.OrderByDescending) or

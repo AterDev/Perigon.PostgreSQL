@@ -4,12 +4,23 @@ namespace Perigon.PostgreSQL.Query;
 
 internal sealed class PostgresQueryProvider : IQueryProvider
 {
-    public PostgresQueryProvider(DbContext context)
+    private readonly DbContext _context;
+    private readonly long _lease;
+    private readonly object? _filterScope;
+    public PostgresQueryProvider(DbContext context, object? filterScope)
     {
-        Context = context;
+        _context = context;
+        _lease = context.CapturePoolLease();
+        _filterScope = filterScope;
     }
 
-    public DbContext Context { get; }
+    public DbContext Context { get { ValidateLease(); return _context; } }
+
+    internal void ValidateLease()
+    {
+        _context.ValidatePoolLease(_lease);
+        _context.ValidateFilterScope(_filterScope);
+    }
 
     public IQueryable CreateQuery(Expression expression)
     {
@@ -18,6 +29,7 @@ internal sealed class PostgresQueryProvider : IQueryProvider
 
     public IQueryable<TElement> CreateQuery<TElement>(Expression expression)
     {
+        ValidateLease();
         return new PostgresQueryable<TElement>(this, expression);
     }
 

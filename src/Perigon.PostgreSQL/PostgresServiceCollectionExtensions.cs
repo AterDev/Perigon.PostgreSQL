@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using Perigon.PostgreSQL.Options;
 
@@ -7,6 +8,88 @@ namespace Perigon.PostgreSQL;
 
 public static class PostgresServiceCollectionExtensions
 {
+    /// <summary>Registers a pooled context and configures application-wide telemetry registration.</summary>
+    public static IServiceCollection AddDbContextPool<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TContext>(
+        this IServiceCollection services,
+        Action<DbContextOptionsBuilder> configure,
+        Action<DbContextRegistrationOptions> configureRegistration,
+        int poolSize = 128)
+        where TContext : DbContext
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configure);
+        ArgumentNullException.ThrowIfNull(configureRegistration);
+        var registration = new DbContextRegistrationOptions();
+        configureRegistration(registration);
+        services.AddDbContextPool<TContext>(configure, poolSize);
+        if (registration.EnableOpenTelemetry)
+            services.AddPerigonPostgreSqlOpenTelemetry();
+        return services;
+    }
+
+    /// <summary>Registers a scoped context backed by a bounded pool. Configuration is fixed for the pool lifetime.</summary>
+    public static IServiceCollection AddDbContextPool<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TContext>(
+        this IServiceCollection services,
+        Action<DbContextOptionsBuilder> configure,
+        int poolSize = 128)
+        where TContext : DbContext
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configure);
+        ArgumentOutOfRangeException.ThrowIfLessThan(poolSize, 1);
+
+        var constructors = typeof(TContext).GetConstructors();
+        if (constructors.Length != 1 || constructors[0].GetParameters() is not [{ ParameterType: var type }] ||
+            type != typeof(DbContextOptions<TContext>))
+            throw new InvalidOperationException("A pooled context must have exactly one public constructor accepting DbContextOptions<TContext>; scoped dependencies must not be captured by a pooled instance.");
+
+        services.AddSingleton<DataSourceHolder<TContext>>();
+        services.AddSingleton<DbContextPool<TContext>>(serviceProvider =>
+        {
+            var builder = new DbContextOptionsBuilder();
+            configure(builder);
+            var options = builder.Build<TContext>();
+            options.LoggerFactory ??= serviceProvider.GetService<ILoggerFactory>();
+            if (options.DataSource is null && !string.IsNullOrWhiteSpace(options.ConnectionString))
+                options.DataSource = serviceProvider.GetRequiredService<DataSourceHolder<TContext>>().GetOrCreate(options);
+            return new DbContextPool<TContext>(
+                () => ActivatorUtilities.CreateInstance<TContext>(serviceProvider, options), poolSize);
+        });
+        services.AddScoped<PooledContextScope<TContext>>();
+        services.AddScoped<TContext>(serviceProvider => serviceProvider.GetRequiredService<PooledContextScope<TContext>>().Context);
+        return services;
+    }
+
+    public static IServiceCollection AddDbContext<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TContext>(
+        this IServiceCollection services,
+        Action<DbContextOptionsBuilder> configure,
+        Action<DbContextRegistrationOptions> configureRegistration,
+        ServiceLifetime lifetime = ServiceLifetime.Scoped)
+        where TContext : DbContext
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        return services.AddDbContext<TContext>((_, builder) => configure(builder), configureRegistration, lifetime);
+    }
+
+    public static IServiceCollection AddDbContext<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TContext>(
+        this IServiceCollection services,
+        Action<IServiceProvider, DbContextOptionsBuilder> configure,
+        Action<DbContextRegistrationOptions> configureRegistration,
+        ServiceLifetime lifetime = ServiceLifetime.Scoped)
+        where TContext : DbContext
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configure);
+        ArgumentNullException.ThrowIfNull(configureRegistration);
+
+        var registration = new DbContextRegistrationOptions();
+        configureRegistration(registration);
+        if (registration.EnableOpenTelemetry)
+            services.AddPerigonPostgreSqlOpenTelemetry();
+
+        return services.AddDbContext<TContext>(configure, lifetime);
+    }
+
     public static IServiceCollection AddDbContext<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TContext>(
         this IServiceCollection services,
         Action<DbContextOptionsBuilder> configure,
@@ -36,6 +119,7 @@ public static class PostgresServiceCollectionExtensions
                 var builder = new DbContextOptionsBuilder();
                 configure(serviceProvider, builder);
                 var options = builder.Build<TContext>();
+                options.LoggerFactory ??= serviceProvider.GetService<ILoggerFactory>();
                 if (options.DataSource is null && !string.IsNullOrWhiteSpace(options.ConnectionString))
                 {
                     options.DataSource = serviceProvider.GetRequiredService<DataSourceHolder<TContext>>().GetOrCreate(options);

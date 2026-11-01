@@ -8,9 +8,9 @@ public abstract partial class DbContext : IQueryFilterContext
 {
     private readonly Dictionary<Type, Dictionary<string, LambdaExpression>> _queryFilters = [];
     private readonly Dictionary<Type, object> _unfilteredSets = [];
-    private readonly AsyncLocal<IReadOnlySet<string>?> _ambientIgnoredFilters = new();
+    private readonly AsyncLocal<FilterState?> _ambientIgnoredFilters = new();
 
-    internal bool HasAmbientFilterScope => _ambientIgnoredFilters.Value is not null;
+    internal bool HasAmbientFilterScope => GetAmbientIgnoredFilters() is not null;
 
     /// <summary>
     /// Registers a named predicate that is applied to every query root for the entity.
@@ -25,6 +25,9 @@ public abstract partial class DbContext : IQueryFilterContext
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(predicate);
 
+        if (Volatile.Read(ref _poolAttached) != 0)
+            new PooledFilterValidator(this).Visit(predicate);
+
         if (!_queryFilters.TryGetValue(typeof(TEntity), out var filters))
         {
             filters = new Dictionary<string, LambdaExpression>(StringComparer.Ordinal);
@@ -32,6 +35,20 @@ public abstract partial class DbContext : IQueryFilterContext
         }
 
         filters[name] = predicate;
+    }
+
+    private sealed class PooledFilterValidator(DbContext context) : ExpressionVisitor
+    {
+        protected override Expression VisitConstant(ConstantExpression node)
+        {
+            var value = node.Value;
+            if (value is not null && !ReferenceEquals(value, context) &&
+                !node.Type.IsPrimitive && !node.Type.IsEnum &&
+                value is not (string or decimal or Guid or DateTime or DateTimeOffset or TimeSpan or DateOnly or TimeOnly))
+                throw new InvalidOperationException(
+                    "Pooled query filters cannot capture local objects or values. Reference resettable context properties directly instead.");
+            return base.VisitConstant(node);
+        }
     }
 
     /// <summary>
@@ -92,9 +109,25 @@ public abstract partial class DbContext : IQueryFilterContext
     IDisposable IQueryFilterContext.PushIgnoredFilters(IReadOnlySet<string> ignoredFilters)
     {
         ArgumentNullException.ThrowIfNull(ignoredFilters);
+        ThrowIfDisposed();
+        _ = GetAmbientIgnoredFilters();
         var previous = _ambientIgnoredFilters.Value;
-        _ambientIgnoredFilters.Value = ignoredFilters;
-        return new FilterScope(() => _ambientIgnoredFilters.Value = previous);
+        var lease = CapturePoolLease();
+        var state = new FilterState(new HashSet<string>(ignoredFilters, StringComparer.Ordinal), lease, previous);
+        _ambientIgnoredFilters.Value = state;
+        return new FilterScope(() =>
+        {
+            Interlocked.Exchange(ref state.Ended, 1);
+            if (ReferenceEquals(_ambientIgnoredFilters.Value, state) &&
+                (Volatile.Read(ref _poolAttached) == 0 ||
+                 (Volatile.Read(ref _disposed) == 0 && CapturePoolLease() == lease)))
+            {
+                var restore = previous;
+                while (restore is not null && Volatile.Read(ref restore.Ended) != 0)
+                    restore = restore.Previous;
+                _ambientIgnoredFilters.Value = restore;
+            }
+        });
     }
 
     [UnconditionalSuppressMessage(
@@ -155,9 +188,57 @@ public abstract partial class DbContext : IQueryFilterContext
         }
     }
 
+    private IReadOnlySet<string>? GetAmbientIgnoredFilters()
+    {
+        var state = _ambientIgnoredFilters.Value;
+        if (state is null)
+            return null;
+        for (var current = state; current is not null; current = current.Previous)
+        {
+            ValidatePoolLease(current.LeaseVersion);
+            if (Volatile.Read(ref current.Ended) != 0)
+                throw new InvalidOperationException("The query filter scope has ended.");
+        }
+        return state.Filters;
+    }
+
+    internal object? CaptureFilterScope()
+    {
+        _ = GetAmbientIgnoredFilters();
+        return _ambientIgnoredFilters.Value;
+    }
+
+    internal void ValidateFilterScope(object? capturedScope)
+    {
+        if (capturedScope is not FilterState expected)
+            return;
+        _ = GetAmbientIgnoredFilters();
+        for (var current = _ambientIgnoredFilters.Value; current is not null; current = current.Previous)
+        {
+            if (ReferenceEquals(current, expected))
+                return;
+        }
+        throw new InvalidOperationException("A query created in a filter scope cannot be used outside that scope.");
+    }
+
     private bool IsFilterIgnored(string name, IReadOnlySet<string>? explicitFilters)
-        => explicitFilters?.Contains(name) == true || explicitFilters?.Contains("*") == true
-            || _ambientIgnoredFilters.Value?.Contains(name) == true || _ambientIgnoredFilters.Value?.Contains("*") == true;
+    {
+        _ = GetAmbientIgnoredFilters();
+        if (explicitFilters?.Contains(name) == true || explicitFilters?.Contains("*") == true)
+            return true;
+        for (var current = _ambientIgnoredFilters.Value; current is not null; current = current.Previous)
+            if (current.Filters.Contains(name) || current.Filters.Contains("*"))
+                return true;
+        return false;
+    }
+
+    private sealed class FilterState(IReadOnlySet<string> filters, long leaseVersion, FilterState? previous)
+    {
+        public IReadOnlySet<string> Filters { get; } = filters;
+        public long LeaseVersion { get; } = leaseVersion;
+        public FilterState? Previous { get; } = previous;
+        public int Ended;
+    }
 
     private void ValidateFilterNames(Type entityType, IReadOnlySet<string> names)
     {
