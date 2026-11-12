@@ -828,7 +828,7 @@ public sealed class CrudIntegrationTests
         var summaries = await db.IntegrationUsers
             .Where(u => u.Status == "projection")
             .OrderBy(u => u.UserName)
-            .Select(u => new UserSummary { Id = u.Id, UserName = u.UserName, Age = u.Age })
+            .ProjectTo<UserSummary>()
             .ToListAsync();
 
         var summary = Assert.Single(summaries);

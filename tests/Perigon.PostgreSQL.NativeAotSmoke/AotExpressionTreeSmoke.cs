@@ -25,6 +25,25 @@ internal static class AotExpressionTreeSmoke
             .ToQuerySql();
     }
 
+    public static BoundSql BuildAutoProjectedSql(SmokeDbContext context, int minimumAge)
+    {
+        return context.Users
+            .Where(user => user.Age > minimumAge)
+            .ProjectTo<SmokeProjection>()
+            .Where(projection => projection.Id > 0)
+            .OrderBy(projection => projection.UserName)
+            .Take(1)
+            .ToQuerySql();
+    }
+
+    public static Task<List<SmokeProjection>> LoadAutoProjectedAsync(SmokeDbContext context, string userName)
+    {
+        return context.Users
+            .Where(user => user.UserName == userName)
+            .ProjectTo<SmokeProjection>()
+            .ToListAsync();
+    }
+
     [UnconditionalSuppressMessage(
         "Trimming",
         "IL2026",

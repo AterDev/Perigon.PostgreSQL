@@ -38,6 +38,63 @@ public sealed class ProjectionSqlTests
     }
 
     [Fact]
+    public void ProjectTo_maps_matching_dto_properties_and_ignores_unmatched_properties()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers
+            .Where(user => user.Age > 18)
+            .OrderBy(user => user.UserName)
+            .ProjectTo<AutoMappedUserSummary>()
+            .ToSql();
+
+        Assert.Equal(
+            "SELECT e.\"id\" AS \"Id\", e.\"user_name\" AS \"UserName\" FROM \"rich_users\" AS e WHERE (e.\"age\" > $1) ORDER BY e.\"user_name\" ASC",
+            sql.CommandText);
+        Assert.Equal(18, sql.Parameters[0].Value);
+    }
+
+    [Fact]
+    public void ProjectTo_supports_post_projection_filter_order_and_paging()
+    {
+        using var db = new TestDbContext();
+
+        var sql = db.RichUsers
+            .ProjectTo<AutoMappedUserSummary>()
+            .Where(user => user.Id > 10)
+            .OrderByDescending(user => user.UserName)
+            .Take(2)
+            .ToSql();
+
+        Assert.Equal(
+            "SELECT * FROM (SELECT e.\"id\" AS \"Id\", e.\"user_name\" AS \"UserName\" FROM \"rich_users\" AS e) AS p WHERE (p.\"Id\" > $1) ORDER BY p.\"UserName\" DESC LIMIT $2",
+            sql.CommandText);
+        Assert.Equal([10, 2], sql.Parameters.Select(parameter => parameter.Value).ToArray());
+    }
+
+    [Fact]
+    public void ProjectTo_rejects_matching_properties_with_incompatible_types()
+    {
+        using var db = new TestDbContext();
+
+        var error = Assert.Throws<Perigon.PostgreSQL.Expressions.UnsupportedQueryExpressionException>(() =>
+            db.RichUsers.ProjectTo<IncompatibleUserSummary>());
+
+        Assert.Contains("source and target property types differ", error.Message);
+    }
+
+    [Fact]
+    public void ProjectTo_requires_at_least_one_matching_property()
+    {
+        using var db = new TestDbContext();
+
+        var error = Assert.Throws<Perigon.PostgreSQL.Expressions.UnsupportedQueryExpressionException>(() =>
+            db.RichUsers.ProjectTo<UnmatchedUserSummary>());
+
+        Assert.Contains("requires at least one public writable property", error.Message);
+    }
+
+    [Fact]
     public void Scalar_member_projection_is_supported()
     {
         using var db = new TestDbContext();
@@ -199,6 +256,25 @@ public sealed class ProjectionSqlTests
         public int Id { get; init; }
 
         public string Name { get; init; } = "";
+    }
+
+    private sealed class AutoMappedUserSummary
+    {
+        public int Id { get; set; }
+
+        public string UserName { get; set; } = "";
+
+        public string Extra { get; set; } = "default";
+    }
+
+    private sealed class IncompatibleUserSummary
+    {
+        public string Id { get; set; } = "";
+    }
+
+    private sealed class UnmatchedUserSummary
+    {
+        public string DisplayName { get; set; } = "";
     }
 
     private static bool IsAdult(int id) => id > 18;

@@ -28,6 +28,7 @@
 | `Select` 实体投影 | 已实现基础版 | `SELECT columns` | 默认选择实体全部列 |
 | `Select` 标量投影 | 已实现基础版 | `SELECT column AS alias` | 通过 `ToScalarListAsync` 执行 |
 | `Select` DTO/匿名类型 | 已实现基础版 | `SELECT col1 AS ..., col2 AS ...` | DTO 投影可执行，匿名类型限 SQL 预览；DTO 标量字段支持关联 `LongCount` / `Sum` 子查询 |
+| `ProjectTo<TDto>()` 自动 DTO 投影 | 已实现基础版 | `SELECT entity_column AS "DtoProperty"` | 至少一个实体映射属性与 DTO 公共可写属性同名且类型兼容；未匹配属性忽略；不支持重命名、嵌套对象或构造函数参数映射 |
 | 普通 `Select` 后的筛选、排序和分页 | 已实现基础版 | 投影子查询与外层 `WHERE/ORDER BY/LIMIT/OFFSET` | 支持标量及 DTO；分页后筛选/排序等复杂顺序明确拒绝 |
 | `Distinct` | 已实现基础版 | `SELECT DISTINCT ...` | 支持实体/标量/DTO 投影后的 distinct |
 | `Join` | 已实现基础版 | `INNER JOIN` | 支持等值连接及 DTO 执行；外表先 `Skip/Take` 时使用子查询，分页后筛选等复杂顺序暂不支持 |
@@ -250,6 +251,7 @@ rg -n "\[Fact\]|\[Theory\]" tests/Perigon.PostgreSQL.Tests tests/Perigon.Postgre
 - 原生 SQL 参数化。
 - Select 标量/匿名/DTO 投影 SQL 预览。
 - Select DTO 投影和标量投影真实 PostgreSQL 执行。
+- `ProjectTo<TDto>()` 同名属性自动投影 SQL 和真实 PostgreSQL 执行。
 - IncludeMany split query 父子结构真实 PostgreSQL 执行。
 - IncludeMany 子集合过滤和排序真实 PostgreSQL 执行。
 - IncludeMany 多父级 `Take` 按父级分页真实 PostgreSQL 执行。

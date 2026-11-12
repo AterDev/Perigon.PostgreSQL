@@ -26,6 +26,11 @@ internal static class StructuredSqlBuilder
             return projectedQuery;
         }
 
+        if (expression is AutoProjectionExpression autoProjection)
+        {
+            return BuildAutoProjection(autoProjection);
+        }
+
         if (expression is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable))
         {
             if (call.Method.Name == nameof(Queryable.Distinct))
@@ -78,7 +83,7 @@ internal static class StructuredSqlBuilder
         [NotNullWhen(true)] out BoundSql? sql)
     {
         var query = new PostProjectionQuery();
-        if (!TryReadPostProjectionQuery(expression, query, out var selectCall) ||
+        if (!TryReadPostProjectionQuery(expression, query, out var projectionRoot) ||
             !query.HasPostOperation ||
             (query.HasDistinct && query.IsOnlyDistinct))
         {
@@ -86,7 +91,7 @@ internal static class StructuredSqlBuilder
             return false;
         }
 
-        if (selectCall.Arguments[0] is MethodCallExpression groupBy &&
+        if (projectionRoot.SourceExpression is MethodCallExpression groupBy &&
             groupBy.Method.DeclaringType == typeof(Queryable) &&
             groupBy.Method.Name == nameof(Queryable.GroupBy))
         {
@@ -100,8 +105,12 @@ internal static class StructuredSqlBuilder
             return false;
         }
 
-        var selector = UnquoteLambda(selectCall.Arguments[1]);
-        var inner = BuildProjection(selectCall.Arguments[0], selector);
+        var selector = projectionRoot.Selector;
+        var inner = projectionRoot.AutoProjection is { } auto
+            ? BuildAutoProjection(auto)
+            : BuildProjection(
+                projectionRoot.SourceExpression,
+                selector ?? throw new InvalidOperationException("A Select projection root must include its selector."));
         if (inner.NonNullableAggregateColumns.Count > 0)
         {
             throw new UnsupportedQueryExpressionException(
@@ -109,7 +118,7 @@ internal static class StructuredSqlBuilder
         }
         if (query.HasDistinct)
         {
-            if (HasOrdering(selectCall.Arguments[0]))
+            if (HasOrdering(projectionRoot.SourceExpression))
             {
                 throw new UnsupportedQueryExpressionException(
                     "Distinct over an ordered query is not supported; apply Distinct before OrderBy.");
@@ -121,7 +130,7 @@ internal static class StructuredSqlBuilder
         var translator = new ProjectedSqlExpressionTranslator(
             parameters,
             "p",
-            scalarProjectionName: ReadScalarProjectionName(selector.Body));
+            scalarProjectionName: selector is null ? null : ReadScalarProjectionName(selector.Body));
         var commandText = $"SELECT * FROM ({inner.CommandText}) AS p";
 
         if (query.Predicates.Count > 0)
@@ -172,13 +181,14 @@ internal static class StructuredSqlBuilder
     private static bool TryBuildPostGroupByQuery(Expression expression, [NotNullWhen(true)] out BoundSql? sql)
     {
         var query = new PostProjectionQuery();
-        if (!TryReadPostProjectionQuery(expression, query, out var selectCall) || !query.HasPostOperation)
+        if (!TryReadPostProjectionQuery(expression, query, out var projectionRoot) || !query.HasPostOperation)
         {
             sql = null;
             return false;
         }
 
-        if (selectCall.Arguments[0] is not MethodCallExpression groupBy ||
+        if (projectionRoot.Selector is not { } selector ||
+            projectionRoot.SourceExpression is not MethodCallExpression groupBy ||
             groupBy.Method.DeclaringType != typeof(Queryable) ||
             groupBy.Method.Name != nameof(Queryable.GroupBy))
         {
@@ -186,7 +196,6 @@ internal static class StructuredSqlBuilder
             return false;
         }
 
-        var selector = UnquoteLambda(selectCall.Arguments[1]);
         if (TryBuildGroupByHavingQuery(groupBy, selector, query, out sql))
         {
             return true;
@@ -245,18 +254,30 @@ internal static class StructuredSqlBuilder
     private static bool TryReadPostProjectionQuery(
         Expression expression,
         PostProjectionQuery query,
-        [NotNullWhen(true)] out MethodCallExpression? selectCall)
+        [NotNullWhen(true)] out ProjectionRoot? projectionRoot)
     {
+        if (expression is AutoProjectionExpression autoProjection)
+        {
+            projectionRoot = new ProjectionRoot(
+                autoProjection.SourceExpression,
+                Selector: null,
+                AutoProjection: autoProjection);
+            return true;
+        }
+
         if (expression is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable))
         {
             if (call.Method.Name == nameof(Queryable.Select))
             {
-                selectCall = call;
+                projectionRoot = new ProjectionRoot(
+                    call.Arguments[0],
+                    UnquoteLambda(call.Arguments[1]),
+                    AutoProjection: null);
                 return true;
             }
 
             if (IsPostProjectionOperator(call.Method.Name) &&
-                TryReadPostProjectionQuery(call.Arguments[0], query, out selectCall))
+                TryReadPostProjectionQuery(call.Arguments[0], query, out projectionRoot))
             {
                 switch (call.Method.Name)
                 {
@@ -290,7 +311,7 @@ internal static class StructuredSqlBuilder
             }
         }
 
-        selectCall = null;
+        projectionRoot = null;
         return false;
     }
 
@@ -309,6 +330,11 @@ internal static class StructuredSqlBuilder
     private static bool HasOrdering(Expression expression)
     {
         expression = StripConvert(expression);
+        if (expression is AutoProjectionExpression autoProjection)
+        {
+            return HasOrdering(autoProjection.SourceExpression);
+        }
+
         if (expression is not MethodCallExpression call ||
             call.Method.DeclaringType != typeof(Queryable))
         {
@@ -343,6 +369,24 @@ internal static class StructuredSqlBuilder
         AppendLimitOffset(queryModel, parameters, ref sql);
         var nonNullableAggregateColumns = ReadNonNullableAggregateOutputs(selector.Body);
         return new BoundSql(sql, parameters.Parameters, nonNullableAggregateColumns);
+    }
+
+    private static BoundSql BuildAutoProjection(AutoProjectionExpression projection)
+    {
+        var model = ResolveEntityModel(projection.SourceExpression);
+        var parameters = new ParameterBag();
+        const string alias = "e";
+        var selections = projection.Properties.Select(property =>
+        {
+            var column = model.GetColumn(property.SourcePropertyName);
+            return $"{alias}.{Identifier.Quote(column.ColumnName)} AS {Identifier.Quote(property.TargetPropertyName)}";
+        });
+
+        var sql = $"SELECT {string.Join(", ", selections)} FROM {model.StoreObjectName} AS {alias}";
+        var queryModel = QueryModelFactory.Create(projection.SourceExpression);
+        AppendWhereAndOrder(model, queryModel, parameters, alias, ref sql);
+        AppendLimitOffset(queryModel, parameters, ref sql);
+        return new BoundSql(sql, parameters.Parameters);
     }
 
     private static BoundSql BuildJoin(MethodCallExpression join)
@@ -1223,6 +1267,11 @@ internal static class StructuredSqlBuilder
         string CommandText,
         ParameterBag Parameters,
         IReadOnlyDictionary<string, string> ProjectionSql);
+
+    private sealed record ProjectionRoot(
+        Expression SourceExpression,
+        LambdaExpression? Selector,
+        AutoProjectionExpression? AutoProjection);
 
     private sealed class ProjectedSqlExpressionTranslator : ExpressionVisitor
     {

@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using Perigon.PostgreSQL.Bulk;
 using Perigon.PostgreSQL.Execution;
 using Perigon.PostgreSQL.Metadata;
@@ -14,6 +15,45 @@ public static class PostgresQueryableExtensions
     public static BoundSql ToSql(this IQueryable source)
     {
         return StructuredSqlBuilder.Build(source);
+    }
+
+    public static IQueryable<TDto> ProjectTo<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TDto>(this IQueryable source)
+        where TDto : class, new()
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        var model = ResolveProjectionSourceModel(source);
+        var sourceProperties = model.Columns.ToDictionary(column => column.PropertyName, StringComparer.Ordinal);
+        var mappings = new List<AutoProjectionProperty>();
+        foreach (var targetProperty in typeof(TDto).GetProperties(BindingFlags.Instance | BindingFlags.Public))
+        {
+            if (targetProperty.GetIndexParameters().Length != 0 || targetProperty.GetSetMethod() is null ||
+                !sourceProperties.TryGetValue(targetProperty.Name, out var sourceProperty))
+            {
+                continue;
+            }
+
+            if (!CanAssignProjectionValue(targetProperty.PropertyType, sourceProperty.ClrType))
+            {
+                throw new Expressions.UnsupportedQueryExpressionException(
+                    $"ProjectTo<{typeof(TDto).Name}> cannot map '{targetProperty.Name}' because the source and target property types differ.");
+            }
+
+            mappings.Add(new AutoProjectionProperty(sourceProperty.PropertyName, targetProperty.Name));
+        }
+
+        if (mappings.Count == 0)
+        {
+            throw new Expressions.UnsupportedQueryExpressionException(
+                $"ProjectTo<{typeof(TDto).Name}> requires at least one public writable property with the same name and a compatible type as a mapped source property.");
+        }
+
+        var projection = new AutoProjectionExpression(
+            source.Expression,
+            typeof(IQueryable<TDto>),
+            mappings);
+        return source.Provider.CreateQuery<TDto>(projection);
     }
 
     public static BoundSql ToQuerySql<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
@@ -334,6 +374,46 @@ public static class PostgresQueryableExtensions
         }
 
         return GetContext(source).ResolveEntityModel(typeof(T));
+    }
+
+    private static EntityModel ResolveProjectionSourceModel(IQueryable source)
+    {
+        if (source.Provider is not PostgresQueryProvider)
+        {
+            throw new InvalidOperationException("ProjectTo can only be used with queries created by Perigon.PostgreSQL.");
+        }
+
+        var expression = source.Expression;
+        while (expression is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable))
+        {
+            if (call.Method.Name is not (nameof(Queryable.Where)
+                or nameof(Queryable.OrderBy)
+                or nameof(Queryable.OrderByDescending)
+                or nameof(Queryable.ThenBy)
+                or nameof(Queryable.ThenByDescending)
+                or nameof(Queryable.Skip)
+                or nameof(Queryable.Take)))
+            {
+                throw new Expressions.UnsupportedQueryExpressionException(
+                    "ProjectTo can only follow entity filters, ordering, and paging operators.");
+            }
+
+            expression = call.Arguments[0];
+        }
+
+        if (expression is ConstantExpression { Value: IEntityModelSource sourceModel } &&
+            source.ElementType == sourceModel.Model.ClrType)
+        {
+            return sourceModel.Model;
+        }
+
+        throw new Expressions.UnsupportedQueryExpressionException(
+            "ProjectTo requires an entity query from a Perigon.PostgreSQL DbSet.");
+    }
+
+    private static bool CanAssignProjectionValue(Type targetType, Type sourceType)
+    {
+        return targetType.IsAssignableFrom(sourceType) || Nullable.GetUnderlyingType(targetType) == sourceType;
     }
 
     private static async Task BulkInsertValuesAsync<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
