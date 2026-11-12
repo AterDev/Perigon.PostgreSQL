@@ -136,6 +136,11 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         return new RawSqlCommand(this, sql);
     }
 
+    /// <summary>
+    /// Ensures that the configured database and the current context's schema exist.
+    /// If the target database is missing, the configured role must be able to connect to a
+    /// PostgreSQL maintenance database and create databases.
+    /// </summary>
     public async Task EnsureCreatedAsync(CancellationToken cancellationToken = default)
     {
         using var operation = EnterOperation();
@@ -184,7 +189,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
             return;
         }
 
-        await using var connection = await GetDataSource().OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var connection = await OpenConnectionEnsuringDatabaseAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -228,6 +233,73 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
 
             throw;
         }
+    }
+
+    private async Task<NpgsqlConnection> OpenConnectionEnsuringDatabaseAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await GetDataSource().OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.InvalidCatalogName)
+        {
+            await EnsureDatabaseExistsAsync(cancellationToken).ConfigureAwait(false);
+            return await GetDataSource().OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task EnsureDatabaseExistsAsync(CancellationToken cancellationToken)
+    {
+        var connectionString = _options.ConnectionString ?? _options.DataSource?.ConnectionString;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "A PostgreSQL connection string is required to create a missing database."
+            );
+        }
+
+        var target = new NpgsqlConnectionStringBuilder(connectionString);
+        var databaseName = target.Database;
+        if (string.IsNullOrWhiteSpace(databaseName))
+        {
+            throw new InvalidOperationException(
+                "Set an explicit Database in the PostgreSQL connection string to create a missing database."
+            );
+        }
+
+        var maintenanceDatabase = string.Equals(databaseName, "postgres", StringComparison.Ordinal)
+            ? "template1"
+            : "postgres";
+        await using var maintenanceDataSource = NpgsqlDataSource.Create(
+            _options.BuildEffectiveConnectionString(maintenanceDatabase)
+        );
+        await using var connection = await maintenanceDataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        await using var existsCommand = connection.CreateCommand();
+        existsCommand.CommandText = "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = @databaseName)";
+        existsCommand.Parameters.AddWithValue("databaseName", databaseName);
+        var exists = (bool)(await existsCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+        if (exists)
+        {
+            return;
+        }
+
+        await using var createCommand = connection.CreateCommand();
+        createCommand.CommandText = $"CREATE DATABASE {QuoteDatabaseIdentifier(databaseName)}";
+        try
+        {
+            await createCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.DuplicateDatabase)
+        {
+            // Another application instance created the database after our existence check.
+        }
+    }
+
+    private static string QuoteDatabaseIdentifier(string identifier)
+    {
+        return $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
     }
 
     public void EnsureCreated()

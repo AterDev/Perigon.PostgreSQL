@@ -27,14 +27,20 @@ public class DbContextOptions
 
     public string MigrationHistorySchema { get; internal set; } = "public";
 
-    internal string BuildEffectiveConnectionString()
+    internal string BuildEffectiveConnectionString(string? database = null)
     {
-        if (string.IsNullOrWhiteSpace(ConnectionString))
+        var connectionString = ConnectionString ?? DataSource?.ConnectionString;
+        if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new InvalidOperationException("PostgreSQL connection string was not configured.");
         }
 
-        var builder = new NpgsqlConnectionStringBuilder(ConnectionString);
+        var builder = new NpgsqlConnectionStringBuilder(connectionString);
+        if (database is not null)
+        {
+            builder.Database = database;
+        }
+
         if (ConnectionTimeout is not null)
         {
             builder.Timeout = TimeoutSeconds(ConnectionTimeout.Value, nameof(ConnectionTimeout));
