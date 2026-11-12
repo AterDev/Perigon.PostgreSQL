@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.3.1
+
+- Added `ProjectTo<TDto>()` for automatic same-name projection of compatible public writable DTO properties.
+- Updated `EnsureCreatedAsync` to create the configured database when it is missing, using a PostgreSQL maintenance database; the role needs `CREATEDB` permission.
+- Aligned the migration and scaffolding tool package with the runtime release.
+
 ## 0.3.0
 
 - Added opt-in scoped `DbContext` pooling, with bounded idle retention, lease-aware query invalidation, and an optional `OnPoolReturn` hook; applications must reset their own mutable request and tenant state.
