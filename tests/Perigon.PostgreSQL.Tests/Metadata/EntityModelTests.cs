@@ -99,6 +99,16 @@ public sealed class EntityModelTests
     }
 
     [Fact]
+    public void Index_attribute_reads_postgresql_filter()
+    {
+        var model = EntityModel.For<FilteredIndexedUser>();
+
+        var index = Assert.Single(model.Indexes);
+        Assert.True(index.IsUnique);
+        Assert.Equal("\"is_active\" = true", index.Filter);
+    }
+
+    [Fact]
     public void NotMapped_entity_type_is_rejected_by_runtime_fallback()
     {
         var error = Assert.Throws<InvalidOperationException>(() => EntityModel.For<RuntimeNotMappedEntity>());
@@ -141,5 +151,19 @@ public sealed class EntityModelTests
 
     private sealed class ManualMaterializerType
     {
+    }
+
+    [Perigon.PostgreSQL.Attributes.Index(
+        nameof(FilteredIndexedUser.Email),
+        Name = "uq_filtered_indexed_users_email",
+        IsUnique = true,
+        Filter = "\"is_active\" = true")]
+    private sealed class FilteredIndexedUser
+    {
+        public int Id { get; set; }
+
+        public string Email { get; set; } = "";
+
+        public bool IsActive { get; set; }
     }
 }

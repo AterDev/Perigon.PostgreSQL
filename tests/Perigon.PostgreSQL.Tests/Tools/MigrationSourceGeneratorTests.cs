@@ -1,3 +1,5 @@
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Perigon.PostgreSQL;
 using Perigon.PostgreSQL.Migrations;
 
@@ -21,9 +23,32 @@ public sealed class MigrationSourceGeneratorTests
             diff);
 
         Assert.Contains("[Migration(typeof(Perigon.PostgreSQL.Tests.Tools.MigrationCliTestContext), \"202610190101_RemoveName\")]", source);
-        Assert.Contains("DROP COLUMN \\u0022name\\u0022", source);
+        Assert.Contains("            ALTER TABLE \"users\" DROP COLUMN \"name\"", source);
+        Assert.Contains("\"\"\"" + Environment.NewLine, source);
         Assert.Contains("public override void Down(MigrationBuilder migrationBuilder)", source);
         Assert.Contains("ADD COLUMN", source);
+    }
+
+    [Theory]
+    [InlineData("CREATE TABLE \"users\" (\n    \"id\" integer\n)")]
+    [InlineData("SELECT '\"\"\"', '\\path';\r\n\n  \r-- 注释\n")]
+    [InlineData("")]
+    public void GeneratesRawSqlLiteralThatPreservesCommandText(string sql)
+    {
+        var diff = new MigrationDiff([new MigrationCommand(sql)], [], []);
+        var source = MigrationSourceGenerator.GenerateMigration(
+            "Demo.Migrations",
+            typeof(MigrationCliTestContext),
+            "0001_Test",
+            "TestMigration",
+            diff);
+
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        Assert.Empty(syntaxTree.GetDiagnostics());
+        var invocation = Assert.Single(syntaxTree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>());
+        var literal = Assert.IsType<LiteralExpressionSyntax>(invocation.ArgumentList.Arguments[0].Expression);
+        Assert.Equal(SyntaxKind.MultiLineRawStringLiteralToken, literal.Token.Kind());
+        Assert.Equal(sql, literal.Token.ValueText);
     }
 
     [Fact]

@@ -616,7 +616,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 }
 
                 builder.AppendLine("                            },");
-                builder.AppendLine($"                            {BoolLiteral(index.IsUnique)}),");
+                builder.AppendLine($"                            {BoolLiteral(index.IsUnique)},");
+                builder.AppendLine("                            new string[] { },");
+                builder.AppendLine($"                            {Literal(index.Filter)}),");
             }
 
             builder.AppendLine("                    },");
@@ -1036,7 +1038,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             indexes.Add(new IndexInfo(
                 ReadNamedStringArgument(attribute, "Name"),
                 propertyNames,
-                ReadNamedBoolArgument(attribute, "IsUnique")));
+                ReadNamedBoolArgument(attribute, "IsUnique"),
+                ReadNamedStringArgument(attribute, "Filter")));
         }
 
         return indexes;
@@ -1434,11 +1437,12 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
     private sealed class IndexInfo
     {
-        public IndexInfo(string? name, IReadOnlyList<string> propertyNames, bool isUnique)
+        public IndexInfo(string? name, IReadOnlyList<string> propertyNames, bool isUnique, string? filter)
         {
             Name = name;
             PropertyNames = propertyNames;
             IsUnique = isUnique;
+            Filter = filter;
         }
 
         public string? Name { get; }
@@ -1446,6 +1450,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public IReadOnlyList<string> PropertyNames { get; }
 
         public bool IsUnique { get; }
+
+        public string? Filter { get; }
     }
 
     private sealed class MaterializerInfo

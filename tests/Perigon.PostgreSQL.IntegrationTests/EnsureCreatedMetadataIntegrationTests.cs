@@ -44,6 +44,7 @@ public sealed class EnsureCreatedMetadataIntegrationTests
         Assert.Equal("attribute table comment", await GetTableCommentAsync(schema, "attribute_users"));
         Assert.Equal("attribute email comment", await GetColumnCommentAsync(schema, "attribute_users", "email"));
         Assert.True(await IndexExistsAsync(schema, "uq_attribute_users_email", isUnique: true));
+        Assert.Equal("(is_active = true)", await GetIndexPredicateAsync(schema, "uq_attribute_users_email"));
     }
 
     [Fact]
@@ -161,12 +162,29 @@ public sealed class EnsureCreatedMetadataIntegrationTests
         return value is bool actual && actual == isUnique;
     }
 
+    private async Task<string?> GetIndexPredicateAsync(string schema, string indexName)
+    {
+        await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT pg_get_expr(i.indpred, i.indrelid)
+            FROM pg_class idx
+            INNER JOIN pg_namespace n ON n.oid = idx.relnamespace
+            INNER JOIN pg_index i ON i.indexrelid = idx.oid
+            WHERE n.nspname = @schema AND idx.relname = @indexName
+            """;
+        command.Parameters.AddWithValue("schema", schema);
+        command.Parameters.AddWithValue("indexName", indexName);
+        return (string?)await command.ExecuteScalarAsync();
+    }
+
     private sealed record ColumnInfo(string DataType, int? NumericPrecision, int? NumericScale, int? DateTimePrecision, string IsNullable);
 }
 
 [Comment("attribute table comment")]
 [System.ComponentModel.DataAnnotations.Schema.Table("attribute_users", Schema = "ensure_created_attribute_meta")]
-[Index(nameof(Email), Name = "uq_attribute_users_email", IsUnique = true)]
+[Index(nameof(Email), Name = "uq_attribute_users_email", IsUnique = true, Filter = "\"is_active\" = true")]
 public sealed class AttributeMetadataUser
 {
     public int Id { get; set; }
@@ -174,6 +192,8 @@ public sealed class AttributeMetadataUser
     [Required]
     [Comment("attribute email comment")]
     public string Email { get; set; } = "";
+
+    public bool IsActive { get; set; }
 
     [Precision(12, 4)]
     public decimal Amount { get; set; }

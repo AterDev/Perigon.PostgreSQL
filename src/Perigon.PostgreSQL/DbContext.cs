@@ -398,7 +398,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
             var models = EntityModelRegistry.GetContextModels(GetType());
             var builder = new ModelBuilder();
             OnModelCreating(builder);
-            var configured = builder.Apply(models);
+            var configured = ApplySoftDeleteIndexConventions(builder.Apply(models));
             var modelsByType = configured.ToDictionary(static model => model.ClrType);
             _modelBuilder = builder;
             _entityModels = configured;
@@ -606,7 +606,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
             _modelBuilder = builder;
         }
 
-        var fallback = builder.Apply([EntityModel.For(entityType)])[0];
+        var fallback = ApplySoftDeleteIndexConventions(builder.Apply([EntityModel.For(entityType)]))[0];
         modelsByType[entityType] = fallback;
         return fallback;
     }
@@ -614,7 +614,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
     internal void AttachPool()
     {
         if (_sets.Count != 0 || _unfilteredSets.Count != 0 || _entityModels is not null ||
-            _modelBuilder is not null || _queryFilters.Count != 0)
+            _modelBuilder is not null || _queryFilters.Count != 0 || _queryFilterTemplates.Count != 0)
             throw new InvalidOperationException("A pooled context must not initialize models, filters or DbSets in its constructor; use expression-bodied DbSet properties.");
         Volatile.Write(ref _poolAttached, 1);
         Interlocked.Increment(ref _poolLeaseVersion);

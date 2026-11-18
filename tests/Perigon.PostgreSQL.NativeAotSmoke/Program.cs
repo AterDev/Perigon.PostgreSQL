@@ -92,6 +92,7 @@ var auditModel = auditDb.Items.Model;
 var auditItem = new SmokeAuditItem();
 var filteredAudit = auditDb.Items.ToQuerySql();
 if (!filteredAudit.CommandText.Contains("WHERE", StringComparison.Ordinal) ||
+    !filteredAudit.CommandText.Contains("is_archived", StringComparison.Ordinal) ||
     !filteredAudit.Parameters.Any(parameter => Equals(parameter.Value, "hidden")))
     throw new InvalidOperationException("NativeAOT smoke expected a parameterized global filter.");
 var generatedId = Guid.CreateVersion7();
@@ -162,6 +163,19 @@ if (cachedFirst.CommandText != cachedSecond.CommandText ||
 var connectionString = Environment.GetEnvironmentVariable("PERIGON_AOT_CONNECTION_STRING");
 if (!string.IsNullOrWhiteSpace(connectionString))
 {
+    await using var auditLive = new SmokeAuditContext(connectionString);
+    await auditLive.EnsureCreatedAsync();
+    await auditLive.Items.InsertAsync(new SmokeAuditItem { Name = "shared" });
+    await auditLive.Items.InsertAsync(new SmokeAuditItem { Name = "shared", IsDeleted = true });
+    await auditLive.Items.InsertAsync(new SmokeAuditItem { Name = "current", IsCurrent = true });
+    await auditLive.Items.InsertAsync(new SmokeAuditItem { Name = "old-current", IsCurrent = true, IsDeleted = true });
+    if (await auditLive.Items.CountAsync() != 2 ||
+        await auditLive.SetWithoutFilters<SmokeAuditItem>("SoftDelete").CountAsync() != 4 ||
+        auditLive.Items.Model.Indexes.Single(index => !index.IsUnique).Filter is not null)
+    {
+        throw new InvalidOperationException("NativeAOT live smoke expected an inherited filter, explicit bypass and partial unique index.");
+    }
+
     await using var navigationLive = new SmokeNavigationContext(connectionString);
     await navigationLive.EnsureCreatedAsync();
     var liveOwner = await navigationLive.Owners.InsertAsync(new SmokeOwner { Name = "aot-owner" });

@@ -236,7 +236,8 @@ public sealed class EntityModel
 
             var name = type.GetProperty("Name")?.GetValue(attribute) as string;
             var isUnique = type.GetProperty("IsUnique")?.GetValue(attribute) as bool? == true;
-            definitions.Add(new IndexDefinition(name, propertyNames, isUnique));
+            var filter = type.GetProperty("Filter")?.GetValue(attribute) as string;
+            definitions.Add(new IndexDefinition(name, propertyNames, isUnique, filter: filter));
         }
 
         return definitions;

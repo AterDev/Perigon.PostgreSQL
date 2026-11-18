@@ -8,6 +8,7 @@ public sealed class IndexedUser
     public int Id { get; set; }
 
     public string Email { get; set; } = "";
+
 }
 
 [View("active_user_view", Schema = "reporting")]

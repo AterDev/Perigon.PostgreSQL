@@ -101,6 +101,10 @@ public sealed class AppDbContext : DbContext
 }
 ```
 
+实体统一继承带 `IsDeleted` 的基类时，可在 `OnModelCreating` 中调用一次
+`EnableSoftDeleteFilter<EntityBase>("NotDeleted", entity => !entity.IsDeleted)`，覆盖匹配的实体。
+匹配实体的唯一索引自动限定为未删除行。`IndexAttribute.Filter` 可附加 PostgreSQL 谓词，索引默认命名规则同样适用。
+
 `Set<T>()` 创建的查询默认应用全部过滤器。需要明确跳过部分具名过滤器时，使用
 `SetWithoutFilters<T>("FilterName", ...)`；需要跳过全部过滤器时，使用
 `SetIgnoringAllFilters<T>()`。具名 API 会校验过滤器名称，空列表或未知名称会抛出异常，

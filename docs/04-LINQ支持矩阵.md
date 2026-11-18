@@ -23,6 +23,7 @@
 | `Skip` | 已实现 | `OFFSET $n` | 支持常量和捕获变量 |
 | `Take` | 已实现 | `LIMIT $n` | 支持常量和捕获变量 |
 | `HasQueryFilter` | 已实现基础版 | 自动追加 `WHERE` 条件 | 在 `OnModelCreating` 中按名称注册；表达式服务端翻译，不做客户端过滤 |
+| `EnableSoftDeleteFilter<TBase>` | 已实现 | 对可赋值给 `TBase` 的实体自动追加命名 `WHERE` 条件 | 支持派生实体、导航和具名绕过。已验证 Windows x64 NativeAOT 与 PostgreSQL 执行 |
 | `SetWithoutFilters<T>(...)` | 已实现基础版 | 省略指定过滤条件 | 具名跳过；空列表和未知名称抛异常 |
 | `SetIgnoringAllFilters<T>()` | 已实现基础版 | 不追加全局过滤条件 | 显式跳过该实体的全部已注册过滤器 |
 | `Select` 实体投影 | 已实现基础版 | `SELECT columns` | 默认选择实体全部列 |

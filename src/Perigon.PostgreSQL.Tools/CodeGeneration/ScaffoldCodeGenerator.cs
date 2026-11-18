@@ -414,7 +414,7 @@ public sealed class ScaffoldCodeGenerator
 
     private static bool TryBuildIndexAttribute(IndexModel index, IReadOnlyDictionary<string, string> propertyNames, out string attribute)
     {
-        if (!IsSimpleIndex(index))
+        if (index.IncludeColumnNames.Count != 0 || !string.IsNullOrWhiteSpace(index.Method))
         {
             attribute = string.Empty;
             return false;
@@ -444,6 +444,10 @@ public sealed class ScaffoldCodeGenerator
         {
             namedArguments.Add("IsUnique = true");
         }
+        if (!string.IsNullOrWhiteSpace(index.Filter))
+        {
+            namedArguments.Add("Filter = " + Literal(index.Filter));
+        }
 
         attribute = "[PerigonIndexAttribute(" + arguments + ", " + string.Join(", ", namedArguments) + ")]";
         return true;
@@ -452,7 +456,6 @@ public sealed class ScaffoldCodeGenerator
     private static bool IsSimpleIndex(IndexModel index)
     {
         return index.IncludeColumnNames.Count == 0 &&
-               string.IsNullOrWhiteSpace(index.Filter) &&
                string.IsNullOrWhiteSpace(index.Method);
     }
 

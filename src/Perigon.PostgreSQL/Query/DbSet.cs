@@ -32,8 +32,8 @@ public sealed class DbSet<T> : IOrderedQueryable<T>, IEntityModelSource, IQueryF
             ? new HashSet<string>(StringComparer.Ordinal)
             : new HashSet<string>(["*"], StringComparer.Ordinal);
         var root = Expression.Constant(this);
-        _expression = applyFilters && context is IQueryFilterContext filters
-            ? filters.ApplyQueryFilters(typeof(T), root)
+        _expression = applyFilters
+            ? context.ApplyQueryFilters<T>(root)
             : root;
         _provider = new PostgresQueryProvider(context, filterScope);
     }
@@ -45,9 +45,7 @@ public sealed class DbSet<T> : IOrderedQueryable<T>, IEntityModelSource, IQueryF
         var filterScope = context.CaptureFilterScope();
         _ignoredFilters = ignoredFilters;
         var root = Expression.Constant(this);
-        _expression = context is IQueryFilterContext filters
-            ? filters.ApplyQueryFilters(typeof(T), root, ignoredFilters)
-            : root;
+        _expression = context.ApplyQueryFilters<T>(root, ignoredFilters);
         _provider = new PostgresQueryProvider(context, filterScope);
     }
 

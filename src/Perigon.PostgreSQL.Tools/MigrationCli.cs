@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Npgsql;
 using Perigon.PostgreSQL;
 using Perigon.PostgreSQL.Migrations;
@@ -648,11 +649,25 @@ internal static class MigrationSourceGenerator
         builder.AppendLine("    {");
         foreach (var command in commands)
         {
-            builder.AppendLine($"        migrationBuilder.Sql({Literal(command.Sql)}, {command.IsDestructive.ToString().ToLowerInvariant()}, {NullableLiteral(command.Warning)});");
+            builder.AppendLine($"        migrationBuilder.Sql({SqlLiteral(command.Sql)}, {command.IsDestructive.ToString().ToLowerInvariant()}, {NullableLiteral(command.Warning)});");
         }
 
         builder.AppendLine("    }");
         builder.AppendLine();
+    }
+
+    private static string SqlLiteral(string sql)
+    {
+        const string indent = "            ";
+        var delimiter = "\"\"\"";
+        while (sql.Contains(delimiter, StringComparison.Ordinal))
+        {
+            delimiter += "\"";
+        }
+
+        // Indent each line without changing the line endings inside the SQL.
+        var indentedSql = Regex.Replace(sql, @"\r\n|[\r\n\u0085\u2028\u2029]", "$0" + indent);
+        return $"{delimiter}{Environment.NewLine}{indent}{indentedSql}{Environment.NewLine}{indent}{delimiter}";
     }
 
     private static string PrimaryKeyLiteral(MigrationPrimaryKey? key)

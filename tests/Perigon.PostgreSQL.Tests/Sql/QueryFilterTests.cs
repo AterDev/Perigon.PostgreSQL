@@ -251,6 +251,46 @@ public sealed class QueryFilterTests
         Assert.Contains("\"tenant_id\"", sql.CommandText);
         Assert.DoesNotContain("NOT", sql.CommandText);
     }
+
+    [Fact]
+    public void Base_filter_applies_to_derived_query_update_delete_and_named_bypass()
+    {
+        using var db = new InheritedFilterDbContext();
+
+        var querySql = db.Posts.Where(post => post.Id > 10).ToQuerySql();
+        Assert.Contains("\"is_deleted\"", querySql.CommandText);
+
+        var updateSql = db.Posts.Where(post => post.Id > 10)
+            .ToUpdateSql(setter => setter.Set(post => post.Title, "updated"));
+        Assert.Contains("\"is_deleted\"", updateSql.CommandText);
+
+        var deleteSql = db.Posts.Where(post => post.Id > 10).ToDeleteSql();
+        Assert.Contains("\"is_deleted\"", deleteSql.CommandText);
+
+        var bypassSql = db.SetWithoutFilters<InheritedFilterPost>("SoftDelete").ToQuerySql();
+        Assert.DoesNotContain(" WHERE ", bypassSql.CommandText);
+
+        var activeIndex = db.Posts.Model.Indexes.Single(index => index.IndexName == "uq_inherited_owner");
+        Assert.Equal("\"is_deleted\" = false", activeIndex.Filter);
+
+        var composedIndex = db.Posts.Model.Indexes.Single(index => index.IndexName == "uq_inherited_title");
+        Assert.Equal("\"is_deleted\" = false AND (\"title\" IS NOT NULL)", composedIndex.Filter);
+    }
+
+    [Fact]
+    public void Base_filter_is_applied_to_filtered_include_children()
+    {
+        using var db = new InheritedFilterDbContext();
+        var childQuery = QueryModelFactory.Create(db.Posts.Where(post => post.Id > 2).Expression);
+        var sql = IncludeManyExtensions.BuildChildrenSql(
+            db.Posts,
+            db.Posts.Model.GetColumn(nameof(InheritedFilterPost.OwnerId)),
+            new[] { 1 },
+            childQuery,
+            applyGlobalFilters: false);
+
+        Assert.Contains("\"is_deleted\"", sql.CommandText);
+    }
 }
 
 public sealed class FallbackFilterDbContext : DbContext
@@ -315,4 +355,46 @@ public sealed class FilterPost
 
     [NotMapped]
     public FilterOwner? Owner { get; set; }
+}
+
+public sealed class InheritedFilterDbContext : DbContext
+{
+    public DbSet<InheritedFilterOwner> Owners => Set<InheritedFilterOwner>();
+
+    public DbSet<InheritedFilterPost> Posts => Set<InheritedFilterPost>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        EnableSoftDeleteFilter<InheritedFilterEntity>("SoftDelete", entity => !entity.IsDeleted);
+        modelBuilder.Entity<InheritedFilterPost>().HasIndex(post => post.OwnerId)
+            .IsUnique()
+            .HasDatabaseName("uq_inherited_owner");
+        modelBuilder.Entity<InheritedFilterPost>().HasIndex(post => post.Title)
+            .IsUnique()
+            .HasDatabaseName("uq_inherited_title")
+            .HasFilter("\"title\" IS NOT NULL");
+    }
+}
+
+public abstract class InheritedFilterEntity
+{
+    public int Id { get; set; }
+
+    public bool IsDeleted { get; set; }
+}
+
+public sealed class InheritedFilterOwner : InheritedFilterEntity
+{
+    [NotMapped]
+    public List<InheritedFilterPost> Posts { get; set; } = [];
+}
+
+public sealed class InheritedFilterPost : InheritedFilterEntity
+{
+    public int OwnerId { get; set; }
+
+    public string Title { get; set; } = "";
+
+    [NotMapped]
+    public InheritedFilterOwner? Owner { get; set; }
 }

@@ -13,4 +13,9 @@ public sealed class IndexAttribute : Attribute
     public string? Name { get; init; }
 
     public bool IsUnique { get; init; }
+
+    /// <summary>
+    /// Optional PostgreSQL predicate applied to the index.
+    /// </summary>
+    public string? Filter { get; init; }
 }
