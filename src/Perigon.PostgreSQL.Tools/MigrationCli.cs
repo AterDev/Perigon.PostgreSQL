@@ -453,7 +453,9 @@ internal sealed class ProjectContext : IAsyncDisposable
 
     public async Task MigrateAsync(string? target, string connectionString)
     {
-        await using var dataSource = NpgsqlDataSource.Create(connectionString);
+        // Missing database recovery needs the original credentials for its maintenance connection.
+        var settings = new NpgsqlConnectionStringBuilder(connectionString) { PersistSecurityInfo = true };
+        await using var dataSource = NpgsqlDataSource.Create(settings.ConnectionString);
         var method = ContextType.GetMethod("MigrateWithDataSourceAsync", [typeof(NpgsqlDataSource), typeof(string), typeof(CancellationToken)]);
         var task = method?.Invoke(Context, [dataSource, target, CancellationToken.None]) as Task
             ?? throw new InvalidOperationException("DbContext.MigrateWithDataSourceAsync was not found.");
@@ -506,9 +508,36 @@ internal sealed class ProjectContext : IAsyncDisposable
         if (stringConstructor is not null) return stringConstructor.Invoke([connection ?? string.Empty]);
         var parameterless = contextType.GetConstructor(Type.EmptyTypes);
         if (parameterless is not null) return parameterless.Invoke(null);
-        var optionsConstructor = contextType.GetConstructors().FirstOrDefault(constructor => constructor.GetParameters().Length == 1 && constructor.GetParameters()[0].ParameterType.FullName?.StartsWith("Perigon.PostgreSQL.Options.DbContextOptions", StringComparison.Ordinal) == true);
-        if (optionsConstructor is not null) throw new InvalidOperationException($"DbContext '{contextType.FullName}' only has an options constructor. Add a public parameterless or single-string constructor for design-time migrations.");
-        throw new InvalidOperationException($"DbContext '{contextType.FullName}' must have a public parameterless or single-string constructor for design-time migrations.");
+        var optionsConstructor = contextType.GetConstructors().FirstOrDefault(constructor =>
+            constructor.GetParameters() is [{ ParameterType: { } parameterType }] &&
+            parameterType.FullName?.StartsWith("Perigon.PostgreSQL.Options.DbContextOptions", StringComparison.Ordinal) == true);
+        if (optionsConstructor is not null)
+        {
+            var parameterType = optionsConstructor.GetParameters()[0].ParameterType;
+            var builderType = parameterType.Assembly.GetType("Perigon.PostgreSQL.Options.DbContextOptionsBuilder")
+                ?? throw new InvalidOperationException("DbContextOptionsBuilder was not found in the loaded Perigon.PostgreSQL assembly.");
+            var builder = Activator.CreateInstance(builderType)
+                ?? throw new InvalidOperationException("DbContextOptionsBuilder could not be created.");
+            if (connection is not null)
+            {
+                var usePostgres = builderType.GetMethod("UsePostgres", [typeof(string)])
+                    ?? throw new InvalidOperationException("DbContextOptionsBuilder.UsePostgres(string) was not found.");
+                usePostgres.Invoke(builder, [connection]);
+            }
+            var build = builderType.GetMethods(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+                .SingleOrDefault(method => method.Name == "Build" && method.IsGenericMethodDefinition && method.GetGenericArguments().Length == 1 && method.GetParameters().Length == 0)
+                ?? throw new InvalidOperationException("DbContextOptionsBuilder.Build<TContext>() was not found.");
+            var options = build.MakeGenericMethod(contextType).Invoke(builder, null)
+                ?? throw new InvalidOperationException("DbContext options could not be built.");
+            if (!parameterType.IsInstanceOfType(options))
+            {
+                throw new InvalidOperationException($"DbContext options type '{options.GetType().FullName}' is not assignable to constructor parameter '{parameterType.FullName}'.");
+            }
+
+            return optionsConstructor.Invoke([options]);
+        }
+
+        throw new InvalidOperationException($"DbContext '{contextType.FullName}' must have a public constructor accepting DbContextOptions, a connection string, or no parameters for design-time migrations.");
     }
 
     private static bool IsDbContext(Type type)

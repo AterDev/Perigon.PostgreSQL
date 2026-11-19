@@ -1,4 +1,5 @@
 using System.Text;
+using Humanizer;
 
 namespace Perigon.PostgreSQL.Metadata;
 
@@ -6,13 +7,19 @@ public static class NamingConventions
 {
     public static string DefaultTableName(Type entityType)
     {
-        var name = ToSnakeCase(entityType.Name);
-        return name.EndsWith('s') ? name : name + "s";
+        var name = entityType.Name;
+        var genericArity = name.IndexOf('`');
+        if (genericArity >= 0)
+        {
+            name = name[..genericArity];
+        }
+
+        return name.Pluralize(inputIsKnownToBeSingular: false);
     }
 
     public static string DefaultColumnName(string propertyName)
     {
-        return ToSnakeCase(propertyName);
+        return propertyName;
     }
 
     public static string ToSnakeCase(string value)

@@ -55,7 +55,7 @@ public sealed record MigrationModel
                     "pk_" + model.TableName,
                     model.PrimaryKeys.Select(static column => column.ColumnName).ToArray()),
             foreignKeys
-                .Where(foreignKey => ReferenceEquals(foreignKey.DependentEntity, model))
+                .Where(foreignKey => foreignKey.DependentEntity.ClrType == model.ClrType)
                 .Select(foreignKey => new MigrationForeignKey(
                     foreignKey.ConstraintName,
                     foreignKey.DependentColumns.Select(static column => column.ColumnName).ToArray(),

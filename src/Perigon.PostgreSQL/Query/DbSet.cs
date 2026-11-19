@@ -12,11 +12,20 @@ internal interface IEntityModelSource
 
 public sealed class DbSet<T> : IOrderedQueryable<T>, IEntityModelSource, IQueryFilterSource where T : class
 {
-    private readonly PostgresQueryProvider _provider;
+    private readonly PostgresQueryProvider? _provider;
     private readonly DbContext _context;
-    private readonly EntityModel _model;
-    private readonly Expression _expression;
-    private readonly IReadOnlySet<string> _ignoredFilters;
+    private readonly EntityModel? _model;
+    private readonly Expression? _expression;
+    private readonly IReadOnlySet<string>? _ignoredFilters;
+    private readonly Func<DbSet<T>>? _resolve;
+    private readonly long _lease;
+
+    internal DbSet(DbContext context, Func<DbSet<T>> resolve)
+    {
+        _context = context;
+        _resolve = resolve;
+        _lease = context.CapturePoolLease();
+    }
 
     internal DbSet(DbContext context, EntityModel model)
         : this(context, model, applyFilters: true)
@@ -61,19 +70,34 @@ public sealed class DbSet<T> : IOrderedQueryable<T>, IEntityModelSource, IQueryF
 
     public DbContext Context { get { ValidateLease(); return _context; } }
 
-    public EntityModel Model { get { ValidateLease(); return _model; } }
+    public EntityModel Model => Resolve() is { } set ? set.Model : _model!;
 
     IReadOnlySet<string> IQueryFilterSource.IgnoredFilters => IgnoredFilters;
 
-    internal IReadOnlySet<string> IgnoredFilters { get { ValidateLease(); return _ignoredFilters; } }
+    internal IReadOnlySet<string> IgnoredFilters => Resolve() is { } set ? set.IgnoredFilters : _ignoredFilters!;
 
     public Type ElementType => typeof(T);
 
-    public Expression Expression { get { ValidateLease(); return _expression; } }
+    public Expression Expression => Resolve() is { } set ? set.Expression : _expression!;
 
-    public IQueryProvider Provider { get { ValidateLease(); return _provider; } }
+    public IQueryProvider Provider => Resolve() is { } set ? set.Provider : _provider!;
 
-    private void ValidateLease() => _provider.ValidateLease();
+    private DbSet<T>? Resolve()
+    {
+        ValidateLease();
+        return _resolve?.Invoke();
+    }
+
+    private void ValidateLease()
+    {
+        if (_provider is not null)
+            _provider.ValidateLease();
+        else
+        {
+            _context.ValidatePoolLease(_lease);
+            _context.ThrowIfDisposed();
+        }
+    }
 
     public IEnumerator<T> GetEnumerator()
     {

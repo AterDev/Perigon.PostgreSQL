@@ -430,7 +430,7 @@ public abstract partial class DbContext : IQueryFilterContext
 
             var activeFilter = $"{Sql.Identifier.Quote(softDeleteColumn.ColumnName)} = false";
             var indexes = model.Indexes.Select(index => new Metadata.IndexDefinition(
-                index.IndexName,
+                index.ConfiguredName,
                 index.Columns.Select(column => column.PropertyName).ToArray(),
                 index.IsUnique,
                 index.IncludeColumns.Select(column => column.PropertyName).ToArray(),

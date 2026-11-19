@@ -2,6 +2,7 @@ using Npgsql;
 using System.Diagnostics.CodeAnalysis;
 using System.Data;
 using Microsoft.Extensions.Logging;
+using Perigon.PostgreSQL.Attributes;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Migrations;
 using Perigon.PostgreSQL.Options;
@@ -45,6 +46,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         var builder = new DbContextOptionsBuilder();
         OnConfiguring(builder);
         _options = builder.Build();
+        EntityModelRegistry.InitializeDbSets(this);
     }
 
     protected DbContext(Action<DbContextOptionsBuilder> configure)
@@ -54,12 +56,14 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         configure(builder);
         OnConfiguring(builder);
         _options = builder.Build();
+        EntityModelRegistry.InitializeDbSets(this);
     }
 
     protected DbContext(DbContextOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options;
+        EntityModelRegistry.InitializeDbSets(this);
     }
 
     protected virtual void OnConfiguring(DbContextOptionsBuilder builder)
@@ -82,7 +86,8 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
     {
     }
 
-    protected DbSet<T> Set<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>()
+    /// <summary>Gets the entity set for the specified type.</summary>
+    public DbSet<T> Set<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>()
         where T : class
     {
         ThrowIfDisposed();
@@ -98,6 +103,12 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         _sets.Add(typeof(T), set);
         return set;
     }
+
+    /// <summary>Creates a deferred, lease-bound handle for a source-generated DbSet property.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public DbSet<T> CreateGeneratedDbSet<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>()
+        where T : class
+        => new(this, Set<T>);
 
     public NpgsqlDataSource GetDataSource()
     {
@@ -235,22 +246,25 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         }
     }
 
-    private async Task<NpgsqlConnection> OpenConnectionEnsuringDatabaseAsync(CancellationToken cancellationToken)
+    internal async Task<NpgsqlConnection> OpenConnectionEnsuringDatabaseAsync(
+        CancellationToken cancellationToken,
+        NpgsqlDataSource? dataSource = null)
     {
+        var source = dataSource ?? GetDataSource();
         try
         {
-            return await GetDataSource().OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return await source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.InvalidCatalogName)
         {
-            await EnsureDatabaseExistsAsync(cancellationToken).ConfigureAwait(false);
-            return await GetDataSource().OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureDatabaseExistsAsync(dataSource, cancellationToken).ConfigureAwait(false);
+            return await source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private async Task EnsureDatabaseExistsAsync(CancellationToken cancellationToken)
+    private async Task EnsureDatabaseExistsAsync(NpgsqlDataSource? dataSource, CancellationToken cancellationToken)
     {
-        var connectionString = _options.ConnectionString ?? _options.DataSource?.ConnectionString;
+        var connectionString = dataSource?.ConnectionString ?? _options.ConnectionString ?? _options.DataSource?.ConnectionString;
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new InvalidOperationException(
@@ -270,9 +284,10 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         var maintenanceDatabase = string.Equals(databaseName, "postgres", StringComparison.Ordinal)
             ? "template1"
             : "postgres";
-        await using var maintenanceDataSource = NpgsqlDataSource.Create(
-            _options.BuildEffectiveConnectionString(maintenanceDatabase)
-        );
+        target.Database = maintenanceDatabase;
+        await using var maintenanceDataSource = NpgsqlDataSource.Create(dataSource is null
+            ? _options.BuildEffectiveConnectionString(maintenanceDatabase)
+            : target.ConnectionString);
         await using var connection = await maintenanceDataSource.OpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -291,7 +306,9 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         {
             await createCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.DuplicateDatabase)
+        catch (PostgresException exception) when (
+            exception.SqlState == PostgresErrorCodes.DuplicateDatabase ||
+            exception is { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: "pg_database_datname_index" })
         {
             // Another application instance created the database after our existence check.
         }
@@ -398,7 +415,11 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
             var models = EntityModelRegistry.GetContextModels(GetType());
             var builder = new ModelBuilder();
             OnModelCreating(builder);
-            var configured = ApplySoftDeleteIndexConventions(builder.Apply(models));
+            var namingConvention = GetNamingConvention();
+            var named = models
+                .Select(model => model.ApplyNamingConvention(namingConvention))
+                .ToArray();
+            var configured = ApplySoftDeleteIndexConventions(builder.Apply(named));
             var modelsByType = configured.ToDictionary(static model => model.ClrType);
             _modelBuilder = builder;
             _entityModels = configured;
@@ -546,7 +567,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         return value switch
         {
             DateTimeOffset dateTimeOffset => dateTimeOffset.UtcDateTime,
-            _ => value
+            _ => EnumStorage.ConvertValue(value)
         };
     }
 
@@ -587,6 +608,18 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
 
     internal IReadOnlyList<EntityModel> GetIncludeEntityModels() => GetEntityModels();
 
+    private NamingConvention GetNamingConvention()
+    {
+        if (_options.NamingConventionConfigured)
+        {
+            return _options.NamingConvention;
+        }
+
+        return GetType().Assembly.GetCustomAttributes(typeof(UseSnakeCaseNamingAttribute), inherit: false).Length > 0
+            ? NamingConvention.SnakeCase
+            : NamingConvention.PascalCase;
+    }
+
     internal EntityModel ResolveEntityModel(
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
     {
@@ -606,7 +639,8 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
             _modelBuilder = builder;
         }
 
-        var fallback = ApplySoftDeleteIndexConventions(builder.Apply([EntityModel.For(entityType)]))[0];
+        var fallbackModel = EntityModel.For(entityType).ApplyNamingConvention(GetNamingConvention());
+        var fallback = ApplySoftDeleteIndexConventions(builder.Apply([fallbackModel]))[0];
         modelsByType[entityType] = fallback;
         return fallback;
     }
@@ -615,15 +649,17 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
     {
         if (_sets.Count != 0 || _unfilteredSets.Count != 0 || _entityModels is not null ||
             _modelBuilder is not null || _queryFilters.Count != 0 || _queryFilterTemplates.Count != 0)
-            throw new InvalidOperationException("A pooled context must not initialize models, filters or DbSets in its constructor; use expression-bodied DbSet properties.");
+            throw new InvalidOperationException("A pooled context must not access models, filters or DbSets in its constructor.");
         Volatile.Write(ref _poolAttached, 1);
         Interlocked.Increment(ref _poolLeaseVersion);
+        EntityModelRegistry.InitializeDbSets(this);
     }
 
     internal void BeginPoolLease()
     {
         Interlocked.Increment(ref _poolLeaseVersion);
         Volatile.Write(ref _disposed, 0);
+        EntityModelRegistry.InitializeDbSets(this);
     }
 
     internal long CapturePoolLease() => Volatile.Read(ref _poolLeaseVersion);
@@ -798,7 +834,7 @@ public abstract partial class DbContext : IDisposable, IAsyncDisposable
         return new OperationLease(this, state, reentrant: false);
     }
 
-    private void ThrowIfDisposed()
+    internal void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
         if (Volatile.Read(ref _poolAttached) != 0)

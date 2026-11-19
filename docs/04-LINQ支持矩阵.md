@@ -14,7 +14,7 @@
 
 | LINQ/API | 状态 | SQL 形态 | 备注 |
 | --- | --- | --- | --- |
-| `DbSet<T>` | 已实现 | `FROM "table"` | 支持默认映射和 Table/Column 特性 |
+| `DbSet<T>` | 已实现 | `FROM "table"` | 支持默认映射和 Table/Column 特性；可通过公开的 `Set<T>()` 或源生成初始化的自动属性访问 |
 | `Where` | 已实现 | `WHERE ...` | 支持多次链式组合 |
 | `OrderBy` | 已实现 | `ORDER BY ... ASC` | 仅支持实体成员 |
 | `OrderByDescending` | 已实现 | `ORDER BY ... DESC` | 仅支持实体成员 |
@@ -72,6 +72,7 @@
 | `u.IsActive` | 已实现 | `u.is_active` |
 | `u.Status == null` | 已实现 | `IS NULL` |
 | `u.Status != null` | 已实现 | `IS NOT NULL` |
+| 标量枚举与可空枚举的相等比较 | 已实现 | 默认 `smallint` 列，使用数值参数比较 |
 | 捕获变量为 null | 已实现 | `IS NULL` / `IS NOT NULL` |
 | `Nullable<T>.HasValue` | 已实现 | `IS NOT NULL` |
 | `Nullable<T>.Value` | 已实现 | 列表达式 |

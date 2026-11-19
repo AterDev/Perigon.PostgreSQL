@@ -1,5 +1,6 @@
 using Perigon.PostgreSQL.Tools.CodeGeneration;
 using Perigon.PostgreSQL.Tools.ReverseEngineering;
+using System.Reflection;
 
 return await PerigonTool.RunAsync(args).ConfigureAwait(false);
 
@@ -7,6 +8,15 @@ internal static class PerigonTool
 {
     public static async Task<int> RunAsync(string[] args)
     {
+        if (args is ["--version" or "-v"])
+        {
+            var assembly = typeof(PerigonTool).Assembly;
+            var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+                ?? assembly.GetName().Version?.ToString();
+            Console.WriteLine(version?.Split('+', 2)[0]);
+            return 0;
+        }
+
         if (MigrationCli.IsMigrationCommand(args))
         {
             return await MigrationCli.RunAsync(args).ConfigureAwait(false);
@@ -81,6 +91,7 @@ internal static class PerigonTool
     private static void WriteUsage()
     {
         Console.WriteLine("Usage:");
+        Console.WriteLine("  dotnet perigon --version | -v");
         Console.WriteLine("  dotnet perigon database scaffold --connection <connection-string> [--context <DbContextName>] [--namespace <namespace>] [--output <directory>] [--schema <schema>] [--table <table>] [--force] [--dry-run] [--no-views]");
         Console.WriteLine("  dotnet perigon migrations add <name> --project <project.csproj> [--context <DbContextName>] [--output <directory>]");
         Console.WriteLine("  dotnet perigon migrations list --project <project.csproj> [--context <DbContextName>]");

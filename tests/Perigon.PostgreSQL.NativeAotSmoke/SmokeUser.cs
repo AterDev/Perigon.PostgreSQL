@@ -9,4 +9,11 @@ public sealed class SmokeUser
     public int Age { get; set; }
 
     public string[]? Tags { get; set; }
+    public SmokeUserStatus Status { get; set; }
+}
+
+public enum SmokeUserStatus
+{
+    Pending,
+    Active
 }

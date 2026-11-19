@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-	[string]$Version = "0.3.1"
+	[string]$Version
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,9 +22,11 @@ foreach ($projectPath in $projectPaths) {
         "Release",
         "-o",
         $resolvedOutputPath.FullName,
-        "/p:PackageVersion=$Version",
         "/p:ContinuousIntegrationBuild=true"
     )
+    if ($Version) {
+        $packArgs += "/p:PackageVersion=$Version"
+    }
 
     dotnet @packArgs
     if ($LASTEXITCODE -ne 0) {

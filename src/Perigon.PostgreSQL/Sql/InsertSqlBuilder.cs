@@ -1,5 +1,4 @@
 using Perigon.PostgreSQL.Metadata;
-using NpgsqlTypes;
 
 namespace Perigon.PostgreSQL.Sql;
 
@@ -15,7 +14,7 @@ internal static class InsertSqlBuilder
         }
 
         var columnSql = string.Join(", ", columns.Select(c => Identifier.Quote(c.ColumnName)));
-        var valueSql = string.Join(", ", columns.Select(c => parameters.Add(EntityValueAccessorRegistry.GetValue(c, entity), InferDbType(c))));
+        var valueSql = string.Join(", ", columns.Select(c => parameters.AddEntityValue(c, entity)));
         var sql = $"INSERT INTO {model.StoreObjectName} ({columnSql}) VALUES ({valueSql})";
 
         if (returning)
@@ -24,12 +23,5 @@ internal static class InsertSqlBuilder
         }
 
         return new BoundSql(sql, parameters.Parameters);
-    }
-
-    private static NpgsqlDbType? InferDbType(ColumnModel column)
-    {
-        return column.TypeName?.Equals("jsonb", StringComparison.OrdinalIgnoreCase) == true
-            ? NpgsqlDbType.Jsonb
-            : null;
     }
 }

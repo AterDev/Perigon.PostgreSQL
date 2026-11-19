@@ -12,7 +12,6 @@ public abstract class SmokeAuditBase
 }
 
 [Index(nameof(Name), IsUnique = true)]
-[Index(nameof(ScopeCode), IsUnique = true, Filter = "\"is_current\" = true")]
 [Index(nameof(IsCurrent))]
 public sealed class SmokeAuditItem : SmokeAuditBase
 {
@@ -39,5 +38,7 @@ public sealed class SmokeAuditContext : DbContext
     {
         HasQueryFilter<SmokeAuditItem>("Visible", item => item.Name != ExcludedName);
         EnableSoftDeleteFilter<SmokeAuditBase>("SoftDelete", item => !item.IsDeleted);
+        modelBuilder.Entity<SmokeAuditItem>().HasIndex(item => item.ScopeCode)
+            .IsUnique().HasFilter("\"is_current\" = true");
     }
 }

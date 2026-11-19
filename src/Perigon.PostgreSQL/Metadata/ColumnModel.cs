@@ -23,7 +23,8 @@ public sealed class ColumnModel
         string? comment = null,
         bool? isUnicode = null,
         string? defaultSql = null,
-        string? generatedColumnSql = null)
+        string? generatedColumnSql = null,
+        bool hasExplicitName = false)
         : this(
             property.DeclaringType ?? throw new ArgumentException("Property must have a declaring type.", nameof(property)),
             property.Name,
@@ -41,7 +42,8 @@ public sealed class ColumnModel
             comment,
             isUnicode,
             defaultSql,
-            generatedColumnSql)
+            generatedColumnSql,
+            hasExplicitName)
     {
         _property = property;
     }
@@ -63,7 +65,8 @@ public sealed class ColumnModel
         string? comment,
         bool? isUnicode,
         string? defaultSql,
-        string? generatedColumnSql)
+        string? generatedColumnSql,
+        bool hasExplicitName)
     {
         DeclaringType = declaringType;
         PropertyName = propertyName;
@@ -82,6 +85,7 @@ public sealed class ColumnModel
         IsUnicode = isUnicode;
         DefaultSql = defaultSql;
         GeneratedColumnSql = generatedColumnSql;
+        HasExplicitName = hasExplicitName;
     }
 
     public PropertyInfo Property
@@ -101,6 +105,8 @@ public sealed class ColumnModel
     public Type ClrType { get; }
 
     public string ColumnName { get; }
+
+    internal bool HasExplicitName { get; }
 
     public string? TypeName { get; }
 
@@ -165,29 +171,37 @@ public sealed class ColumnModel
             configuration.Comment ?? Comment,
                 configuration.IsUnicode ?? IsUnicode,
                 configuration.DefaultSql ?? DefaultSql,
-                configuration.GeneratedColumnSql ?? GeneratedColumnSql)
+                configuration.GeneratedColumnSql ?? GeneratedColumnSql,
+                HasExplicitName || configuration.ColumnName is not null)
             .WithTimestampPolicy(configuration.TimestampOnInsert ?? TimestampOnInsert, configuration.TimestampOnUpdate ?? TimestampOnUpdate);
     }
 
-        internal ColumnModel WithPrimaryKey(bool isPrimaryKey)
+    internal ColumnModel WithColumnName(string columnName)
+    {
+        if (columnName == ColumnName)
         {
-            return new ColumnModel(
-                Property,
-                ColumnName,
-                TypeName,
-                isPrimaryKey,
-                IsIdentity,
-                IsGenerated,
-                IsArray,
-                IsNullable,
-                MaxLength,
-                Precision,
-                Scale,
-                Comment,
-                IsUnicode,
-                DefaultSql,
-                GeneratedColumnSql).WithTimestampPolicy(TimestampOnInsert, TimestampOnUpdate);
+            return this;
         }
+
+        return new ColumnModel(
+            DeclaringType, PropertyName, ClrType, columnName, TypeName,
+            IsPrimaryKey, IsIdentity, IsGenerated, IsArray, IsNullable,
+            MaxLength, Precision, Scale, Comment, IsUnicode, DefaultSql, GeneratedColumnSql, HasExplicitName)
+        {
+            _property = _property
+        }.WithTimestampPolicy(TimestampOnInsert, TimestampOnUpdate);
+    }
+
+    internal ColumnModel WithPrimaryKey(bool isPrimaryKey)
+    {
+        return new ColumnModel(
+            DeclaringType, PropertyName, ClrType, ColumnName, TypeName,
+            isPrimaryKey, IsIdentity, IsGenerated, IsArray, IsNullable,
+            MaxLength, Precision, Scale, Comment, IsUnicode, DefaultSql, GeneratedColumnSql, HasExplicitName)
+        {
+            _property = _property
+        }.WithTimestampPolicy(TimestampOnInsert, TimestampOnUpdate);
+    }
 
     public static ColumnModel CreateGenerated<TDeclaring, TProperty>(
         string propertyName,
@@ -215,7 +229,8 @@ public sealed class ColumnModel
         string propertyName, string columnName, string? typeName, bool isPrimaryKey, bool isIdentity,
         bool isGenerated, bool isArray, bool isNullable, int? maxLength, int? precision, int? scale,
         string? comment, bool? isUnicode, string? defaultSql, string? generatedColumnSql,
-        bool timestampOnInsert, bool timestampOnUpdate)
+        bool timestampOnInsert, bool timestampOnUpdate,
+        bool hasExplicitName = false)
     {
         return new ColumnModel(
             typeof(TDeclaring),
@@ -234,6 +249,7 @@ public sealed class ColumnModel
             comment,
             isUnicode,
             defaultSql,
-            generatedColumnSql).WithTimestampPolicy(timestampOnInsert, timestampOnUpdate);
+            generatedColumnSql,
+            hasExplicitName).WithTimestampPolicy(timestampOnInsert, timestampOnUpdate);
     }
 }

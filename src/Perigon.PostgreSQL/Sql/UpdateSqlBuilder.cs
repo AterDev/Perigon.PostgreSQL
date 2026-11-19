@@ -74,13 +74,14 @@ internal static class UpdateSqlBuilder
                 ?? throw new UnsupportedQueryExpressionException("Update Set target must be a mapped member.");
             var column = model.GetColumn(member.Member.Name);
             explicitlySet.Add(column.PropertyName);
-            var valueSql = ReadUpdateValueSql(model, parameters, call.Arguments[^1]);
+            var valueSql = ReadUpdateValueSql(model, column, parameters, call.Arguments[^1]);
             assignments.Add($"{Identifier.Quote(column.ColumnName)} = {valueSql}");
         }
     }
 
     private static string ReadUpdateValueSql(
         EntityModel model,
+        ColumnModel column,
         ParameterBag parameters,
         Expression valueExpression)
     {
@@ -91,7 +92,7 @@ internal static class UpdateSqlBuilder
         }
 
         var value = ExpressionValueReader.Read(valueExpression);
-        return parameters.Add(value);
+        return parameters.Add(EnumStorage.ConvertValue(value, column.TypeName));
     }
 
     private static LambdaExpression UnquoteLambda(Expression expression)

@@ -15,7 +15,7 @@ internal static class MigrationRunner
         var targetIndex = ResolveTargetIndex(migrations, targetMigrationId);
         var historyTable = context.MigrationHistoryTable;
         var historySchema = context.MigrationHistorySchema;
-        await using var connection = await (dataSource ?? context.GetDataSource()).OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var connection = await context.OpenConnectionEnsuringDatabaseAsync(cancellationToken, dataSource).ConfigureAwait(false);
         await AcquireLockAsync(connection, historyTable, cancellationToken).ConfigureAwait(false);
         try
         {

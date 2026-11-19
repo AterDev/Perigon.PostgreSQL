@@ -202,11 +202,6 @@ internal static class CommandExecutor
             return value;
         }
 
-        if (effectiveType.IsEnum)
-        {
-            return Enum.ToObject(effectiveType, value);
-        }
-
         return ConvertToTargetType(value, effectiveType);
     }
 
@@ -323,6 +318,11 @@ internal static class CommandExecutor
 
     private static object ConvertToTargetType(object value, Type targetType)
     {
+        if (targetType.IsEnum)
+        {
+            return targetType.IsInstanceOfType(value) ? value : Enum.ToObject(targetType, value);
+        }
+
         if (targetType == typeof(DateTimeOffset) && value is DateTime dateTime)
         {
             if (dateTime.Kind == DateTimeKind.Local)

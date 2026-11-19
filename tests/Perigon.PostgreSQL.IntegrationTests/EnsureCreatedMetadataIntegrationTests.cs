@@ -44,7 +44,7 @@ public sealed class EnsureCreatedMetadataIntegrationTests
         Assert.Equal("attribute table comment", await GetTableCommentAsync(schema, "attribute_users"));
         Assert.Equal("attribute email comment", await GetColumnCommentAsync(schema, "attribute_users", "email"));
         Assert.True(await IndexExistsAsync(schema, "uq_attribute_users_email", isUnique: true));
-        Assert.Equal("(is_active = true)", await GetIndexPredicateAsync(schema, "uq_attribute_users_email"));
+        Assert.Null(await GetIndexPredicateAsync(schema, "uq_attribute_users_email"));
     }
 
     [Fact]
@@ -75,6 +75,7 @@ public sealed class EnsureCreatedMetadataIntegrationTests
         Assert.Equal("fluent table comment", await GetTableCommentAsync(schema, "fluent_users"));
         Assert.Equal("fluent email comment", await GetColumnCommentAsync(schema, "fluent_users", "contact_email"));
         Assert.True(await IndexExistsAsync(schema, "uq_fluent_users_contact_email", isUnique: true));
+        Assert.Equal("(contact_email <> ''::text)", await GetIndexPredicateAsync(schema, "uq_fluent_users_contact_email"));
     }
 
     private async Task ResetSchemaAsync(string schema)
@@ -176,7 +177,7 @@ public sealed class EnsureCreatedMetadataIntegrationTests
             """;
         command.Parameters.AddWithValue("schema", schema);
         command.Parameters.AddWithValue("indexName", indexName);
-        return (string?)await command.ExecuteScalarAsync();
+        return await command.ExecuteScalarAsync() as string;
     }
 
     private sealed record ColumnInfo(string DataType, int? NumericPrecision, int? NumericScale, int? DateTimePrecision, string IsNullable);
@@ -184,7 +185,7 @@ public sealed class EnsureCreatedMetadataIntegrationTests
 
 [Comment("attribute table comment")]
 [System.ComponentModel.DataAnnotations.Schema.Table("attribute_users", Schema = "ensure_created_attribute_meta")]
-[Index(nameof(Email), Name = "uq_attribute_users_email", IsUnique = true, Filter = "\"is_active\" = true")]
+[Index(nameof(Email), Name = "uq_attribute_users_email", IsUnique = true)]
 public sealed class AttributeMetadataUser
 {
     public int Id { get; set; }
@@ -252,7 +253,8 @@ public sealed class FluentMetadataDbContext : DbContext
             entity.Property(user => user.Code).IsUnicode(false);
             entity.HasIndex(user => user.Email)
                 .HasDatabaseName("uq_fluent_users_contact_email")
-                .IsUnique();
+                .IsUnique()
+                .HasFilter("\"contact_email\" <> ''");
         });
     }
 }

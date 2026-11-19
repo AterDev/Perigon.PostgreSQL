@@ -31,6 +31,23 @@ public sealed class DbContextOptionsBuilder
         return UsePostgres(dataSource);
     }
 
+    public DbContextOptionsBuilder UseNamingConvention(NamingConvention namingConvention)
+    {
+        if (!Enum.IsDefined(namingConvention))
+        {
+            throw new ArgumentOutOfRangeException(nameof(namingConvention), namingConvention, "Unknown naming convention.");
+        }
+
+        _options.NamingConvention = namingConvention;
+        _options.NamingConventionConfigured = true;
+        return this;
+    }
+
+    public DbContextOptionsBuilder UseSnakeCaseNaming(bool enabled = true)
+    {
+        return UseNamingConvention(enabled ? NamingConvention.SnakeCase : NamingConvention.PascalCase);
+    }
+
     public DbContextOptionsBuilder EnableSensitiveLogging(bool enabled = true)
     {
         _options.SensitiveLoggingEnabled = enabled;
@@ -116,7 +133,8 @@ public sealed class DbContextOptionsBuilder
         return _options;
     }
 
-    internal DbContextOptions<TContext> Build<TContext>()
+    /// <summary>Builds typed options for explicit context construction.</summary>
+    public DbContextOptions<TContext> Build<TContext>()
         where TContext : DbContext
     {
         return new DbContextOptions<TContext>
@@ -131,7 +149,9 @@ public sealed class DbContextOptionsBuilder
             MinPoolSize = _options.MinPoolSize,
             MaxPoolSize = _options.MaxPoolSize,
             MigrationHistoryTableName = _options.MigrationHistoryTableName,
-            MigrationHistorySchema = _options.MigrationHistorySchema
+            MigrationHistorySchema = _options.MigrationHistorySchema,
+            NamingConvention = _options.NamingConvention,
+            NamingConventionConfigured = _options.NamingConventionConfigured
         };
     }
 }

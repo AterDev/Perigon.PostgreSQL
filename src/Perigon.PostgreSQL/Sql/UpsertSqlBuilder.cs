@@ -1,5 +1,4 @@
 using System.Linq.Expressions;
-using NpgsqlTypes;
 using Perigon.PostgreSQL.Expressions;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Bulk;
@@ -39,7 +38,7 @@ internal static class UpsertSqlBuilder
             .ToArray();
         var columnSql = string.Join(", ", columns.Select(c => Identifier.Quote(c.ColumnName)));
         var rows = entities.Select(entity =>
-            "(" + string.Join(", ", columns.Select(c => parameters.Add(EntityValueAccessorRegistry.GetValue(c, entity), InferDbType(c)))) + ")");
+            "(" + string.Join(", ", columns.Select(c => parameters.AddEntityValue(c, entity))) + ")");
 
         var overridingIdentity = conflictColumnModels.Any(static column => column.IsIdentity);
         var sql = $"INSERT INTO {model.StoreObjectName} ({columnSql}){(overridingIdentity ? " OVERRIDING SYSTEM VALUE" : string.Empty)} VALUES {string.Join(", ", rows)} ON CONFLICT ({string.Join(", ", conflictColumns.Select(Identifier.Quote))})";
@@ -113,12 +112,5 @@ internal static class UpsertSqlBuilder
         }
 
         return expression;
-    }
-
-    private static NpgsqlDbType? InferDbType(ColumnModel column)
-    {
-        return column.TypeName?.Equals("jsonb", StringComparison.OrdinalIgnoreCase) == true
-            ? NpgsqlDbType.Jsonb
-            : null;
     }
 }

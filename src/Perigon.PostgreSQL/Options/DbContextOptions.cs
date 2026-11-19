@@ -27,6 +27,10 @@ public class DbContextOptions
 
     public string MigrationHistorySchema { get; internal set; } = "public";
 
+    public NamingConvention NamingConvention { get; internal set; } = NamingConvention.PascalCase;
+
+    internal bool NamingConventionConfigured { get; set; }
+
     internal string BuildEffectiveConnectionString(string? database = null)
     {
         var connectionString = ConnectionString ?? DataSource?.ConnectionString;

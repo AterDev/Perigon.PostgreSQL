@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Perigon.PostgreSQL.Attributes;
+using Perigon.PostgreSQL.Options;
 using Perigon.PostgreSQL.Sql;
 
 namespace Perigon.PostgreSQL.Metadata;
@@ -16,7 +17,8 @@ public sealed class EntityModel
         bool isView,
         IReadOnlyList<IndexDefinition> indexes,
         string? comment,
-        bool isGenerated)
+        bool isGenerated,
+        bool hasExplicitTableName)
     {
         ClrType = clrType;
         Schema = schema;
@@ -29,6 +31,7 @@ public sealed class EntityModel
         IsView = isView;
         Comment = comment;
         IsGenerated = isGenerated;
+        HasExplicitTableName = hasExplicitTableName;
     }
 
     [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)]
@@ -54,6 +57,8 @@ public sealed class EntityModel
 
     public bool IsGenerated { get; }
 
+    internal bool HasExplicitTableName { get; }
+
     public string StoreObjectName => Identifier.Qualify(Schema, TableName);
 
     public ColumnModel GetColumn(string propertyName)
@@ -76,10 +81,17 @@ public sealed class EntityModel
 
         if (EntityModelRegistry.TryGet(entityType, out var generated))
         {
-            return generated;
+            return ApplyAssemblyNamingConvention(generated, entityType);
         }
 
-        return Build(entityType);
+        return ApplyAssemblyNamingConvention(Build(entityType), entityType);
+    }
+
+    private static EntityModel ApplyAssemblyNamingConvention(EntityModel model, Type entityType)
+    {
+        return entityType.Assembly.GetCustomAttributes(typeof(UseSnakeCaseNamingAttribute), inherit: false).Length > 0
+            ? model.ApplyNamingConvention(NamingConvention.SnakeCase)
+            : model;
     }
 
     public static EntityModel CreateGenerated<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string? schema, string tableName, IReadOnlyList<ColumnModel> columns)
@@ -94,10 +106,11 @@ public sealed class EntityModel
         IReadOnlyList<ColumnModel> columns,
         bool isView,
         IReadOnlyList<IndexDefinition> indexes,
-        string? comment = null)
+        string? comment = null,
+        bool hasExplicitTableName = false)
         where T : class
     {
-        return new EntityModel(typeof(T), schema, tableName, columns, Array.Empty<ForeignKeyModel>(), isView, indexes, comment, isGenerated: true);
+        return new EntityModel(typeof(T), schema, tableName, columns, Array.Empty<ForeignKeyModel>(), isView, indexes, comment, isGenerated: true, hasExplicitTableName);
     }
 
     internal EntityModel Apply(
@@ -106,7 +119,8 @@ public sealed class EntityModel
         IReadOnlyList<ColumnModel> columns,
         string? comment,
         IReadOnlyList<IndexDefinition> indexes,
-        IReadOnlyList<ForeignKeyModel>? foreignKeys)
+        IReadOnlyList<ForeignKeyModel>? foreignKeys,
+        bool? hasExplicitTableName = null)
     {
         return new EntityModel(
             ClrType,
@@ -117,7 +131,38 @@ public sealed class EntityModel
             IsView,
             indexes,
             comment ?? Comment,
-            IsGenerated);
+            IsGenerated,
+            hasExplicitTableName ?? HasExplicitTableName);
+    }
+
+    internal EntityModel ApplyNamingConvention(NamingConvention namingConvention)
+    {
+        var tableName = !HasExplicitTableName
+            ? namingConvention == NamingConvention.SnakeCase
+                ? NamingConventions.ToSnakeCase(NamingConventions.DefaultTableName(ClrType))
+                : NamingConventions.DefaultTableName(ClrType)
+            : TableName;
+        var columns = Columns
+            .Select(column => !column.HasExplicitName
+                ? column.WithColumnName(namingConvention == NamingConvention.SnakeCase
+                    ? NamingConventions.ToSnakeCase(NamingConventions.DefaultColumnName(column.PropertyName))
+                    : NamingConventions.DefaultColumnName(column.PropertyName))
+                : column)
+            .ToArray();
+        if (tableName == TableName && Columns.SequenceEqual(columns))
+        {
+            return this;
+        }
+
+        var indexes = Indexes.Select(static index => new IndexDefinition(
+            index.ConfiguredName,
+            index.Columns.Select(static column => column.PropertyName).ToArray(),
+            index.IsUnique,
+            index.IncludeColumns.Select(static column => column.PropertyName).ToArray(),
+            index.Filter,
+            index.Method)).ToArray();
+
+        return Apply(Schema, tableName, columns, Comment, indexes, ForeignKeys, hasExplicitTableName: HasExplicitTableName);
     }
 
     private static EntityModel Build(
@@ -176,12 +221,13 @@ public sealed class EntityModel
                 precision,
                 scale,
                 comment,
-                isUnicode).WithTimestampPolicy(
+                isUnicode,
+                hasExplicitName: perigonColumn?.Name is not null || schemaColumn?.Name is not null).WithTimestampPolicy(
                     property.GetCustomAttribute<AutoTimestampAttribute>(inherit: true)?.OnInsert ?? false,
                     property.GetCustomAttribute<AutoTimestampAttribute>(inherit: true)?.OnUpdate ?? false));
         }
 
-            return new EntityModel(entityType, schema, tableName, columns, Array.Empty<ForeignKeyModel>(), view is not null, ReadIndexDefinitions(entityType), entityComment, isGenerated: false);
+            return new EntityModel(entityType, schema, tableName, columns, Array.Empty<ForeignKeyModel>(), view is not null, ReadIndexDefinitions(entityType), entityComment, isGenerated: false, hasExplicitTableName: view is not null || perigonTable is not null || schemaTable is not null);
     }
 
     private IReadOnlyList<IndexModel> CreateIndexes(IReadOnlyList<IndexDefinition> definitions)
@@ -199,7 +245,10 @@ public sealed class EntityModel
             var name = string.IsNullOrWhiteSpace(definition.Name)
                 ? DefaultIndexName(columns, definition.IsUnique)
                 : definition.Name!;
-            indexes.Add(new IndexModel(name, this, columns, definition.IsUnique, includeColumns, definition.Filter, definition.Method));
+            indexes.Add(new IndexModel(name, this, columns, definition.IsUnique, includeColumns, definition.Filter, definition.Method)
+            {
+                ConfiguredName = definition.Name
+            });
         }
 
         return indexes;
@@ -236,8 +285,7 @@ public sealed class EntityModel
 
             var name = type.GetProperty("Name")?.GetValue(attribute) as string;
             var isUnique = type.GetProperty("IsUnique")?.GetValue(attribute) as bool? == true;
-            var filter = type.GetProperty("Filter")?.GetValue(attribute) as string;
-            definitions.Add(new IndexDefinition(name, propertyNames, isUnique, filter: filter));
+            definitions.Add(new IndexDefinition(name, propertyNames, isUnique));
         }
 
         return definitions;

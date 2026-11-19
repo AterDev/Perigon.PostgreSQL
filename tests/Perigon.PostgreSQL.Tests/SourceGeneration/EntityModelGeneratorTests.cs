@@ -515,6 +515,44 @@ public sealed class EntityModelGeneratorTests
     }
 
     [Fact]
+    public void Generator_uses_xml_summary_comments_as_fallback_and_prefers_explicit_attribute()
+    {
+        const string source = """
+            using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Attributes;
+
+            namespace Demo;
+
+            public sealed class DemoDbContext : DbContext
+            {
+                public DemoDbContext() : base(_ => { }) { }
+                public DbSet<SummaryEntity> Entities => Set<SummaryEntity>();
+            }
+
+            /// <summary>Entity summary comment</summary>
+            public sealed class SummaryEntity
+            {
+                public int Id { get; set; }
+
+                /// <summary>Property summary comment</summary>
+                public string Name { get; set; } = "";
+
+                /// <summary>Fallback property comment</summary>
+                [Comment("Explicit property comment")]
+                public string ExplicitName { get; set; } = "";
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("\"Entity summary comment\"", generated);
+        Assert.Contains("\"Property summary comment\"", generated);
+        Assert.Contains("\"Explicit property comment\"", generated);
+        Assert.DoesNotContain("\"Fallback property comment\"", generated);
+    }
+
+    [Fact]
     public void Generator_uses_distinct_materializer_names_for_colliding_sanitized_types()
     {
         const string source = """

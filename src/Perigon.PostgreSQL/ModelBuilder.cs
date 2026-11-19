@@ -25,7 +25,9 @@ public sealed class ModelBuilder
     {
         if (_configurations.Count == 0)
         {
-            return models;
+            return models.Any(static model => model.ForeignKeys.Count != 0)
+                ? RebindForeignKeys(models, models.ToDictionary(static model => model.ClrType))
+                : models;
         }
 
         var configured = new List<EntityModel>(models.Count);
@@ -113,7 +115,7 @@ public sealed class ModelBuilder
             .Select(model => explicitForeignKeys.TryGetValue(model.ClrType, out var foreignKeys)
                 ? model.Apply(model.Schema, model.TableName, model.Columns, model.Comment, model.Indexes.Select(static index =>
                     new IndexDefinition(
-                        index.IndexName,
+                        index.ConfiguredName,
                         index.Columns.Select(column => column.PropertyName).ToArray(),
                         index.IsUnique,
                         index.IncludeColumns.Select(column => column.PropertyName).ToArray(),
@@ -172,7 +174,7 @@ public sealed class ModelBuilder
                 model.Columns,
                 model.Comment,
                 model.Indexes.Select(static index => new IndexDefinition(
-                    index.IndexName,
+                    index.ConfiguredName,
                     index.Columns.Select(static column => column.PropertyName).ToArray(),
                     index.IsUnique,
                     index.IncludeColumns.Select(static column => column.PropertyName).ToArray(),
@@ -215,7 +217,7 @@ public sealed class ModelBuilder
         {
             var propertyNames = index.Columns.Select(column => column.PropertyName).ToArray();
             merged[GetIndexKey(propertyNames)] = new IndexDefinition(
-                index.IndexName,
+                index.ConfiguredName,
                 propertyNames,
                 index.IsUnique,
                 index.IncludeColumns.Select(column => column.PropertyName).ToArray(),

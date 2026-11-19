@@ -1,4 +1,3 @@
-using NpgsqlTypes;
 using Perigon.PostgreSQL.Bulk;
 using Perigon.PostgreSQL.Metadata;
 
@@ -18,7 +17,7 @@ internal static class InsertManySqlBuilder
         var columns = model.Columns.Where(c => c.IsWritable).ToArray();
         var columnSql = string.Join(", ", columns.Select(c => Identifier.Quote(c.ColumnName)));
         var rows = entities.Select(entity =>
-            "(" + string.Join(", ", columns.Select(c => parameters.Add(EntityValueAccessorRegistry.GetValue(c, entity), InferDbType(c)))) + ")");
+            "(" + string.Join(", ", columns.Select(c => parameters.AddEntityValue(c, entity))) + ")");
         var returningColumns = options?.ReturnAllColumns == false && model.PrimaryKeys.Count > 0
             ? model.PrimaryKeys
             : model.Columns;
@@ -40,16 +39,9 @@ internal static class InsertManySqlBuilder
         var columns = model.Columns.Where(c => c.IsWritable).ToArray();
         var columnSql = string.Join(", ", columns.Select(c => Identifier.Quote(c.ColumnName)));
         var rows = entities.Select(entity =>
-            "(" + string.Join(", ", columns.Select(c => parameters.Add(EntityValueAccessorRegistry.GetValue(c, entity), InferDbType(c)))) + ")");
+            "(" + string.Join(", ", columns.Select(c => parameters.AddEntityValue(c, entity))) + ")");
 
         var sql = $"INSERT INTO {model.StoreObjectName} ({columnSql}) VALUES {string.Join(", ", rows)}";
         return new BoundSql(sql, parameters.Parameters);
-    }
-
-    private static NpgsqlDbType? InferDbType(ColumnModel column)
-    {
-        return column.TypeName?.Equals("jsonb", StringComparison.OrdinalIgnoreCase) == true
-            ? NpgsqlDbType.Jsonb
-            : null;
     }
 }

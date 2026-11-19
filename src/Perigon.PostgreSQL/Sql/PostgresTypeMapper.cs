@@ -17,7 +17,11 @@ internal static class PostgresTypeMapper
         }
 
         var type = Nullable.GetUnderlyingType(column.ClrType) ?? column.ClrType;
-        if (type == typeof(short)) return "smallint";
+        if (type.IsEnum || type == typeof(short))
+        {
+            return "smallint";
+        }
+
         if (type == typeof(int)) return "integer";
         if (type == typeof(long)) return "bigint";
         if (type == typeof(float)) return "real";

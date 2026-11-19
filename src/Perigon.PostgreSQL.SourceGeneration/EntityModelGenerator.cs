@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -74,7 +76,12 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             return null;
         }
 
-        return new DbSetInfo(contextType, entityType);
+        var initialize = property.Initializer is null &&
+            property.AccessorList?.Accessors is { Count: 2 } accessors &&
+            accessors.All(static accessor => accessor.Body is null && accessor.ExpressionBody is null) &&
+            !propertySymbol.IsStatic && !propertySymbol.IsVirtual && !propertySymbol.IsOverride &&
+            propertySymbol.SetMethod is { IsInitOnly: false, DeclaredAccessibility: Accessibility.Public or Accessibility.Internal };
+        return new DbSetInfo(contextType, entityType, initialize ? propertySymbol.Name : null);
     }
 
     private static INamedTypeSymbol? TryReadMaterializerType(GeneratorSyntaxContext context)
@@ -163,6 +170,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             }
 
             contextInfo.AddEntity(info.FullName);
+            if (dbSet.PropertyName is { } propertyName)
+                contextInfo.DbSetProperties.Add(propertyName, info.FullName);
         }
 
         foreach (var type in materializerTypes)
@@ -282,7 +291,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                         principal.FullName,
                         column.PropertyName,
                         principalKey.Name,
-                        "fk_" + ToSnakeCase(dependent.TableNameLiteral.Trim('"')) + "_" + ToSnakeCase(column.ColumnNameLiteral.Trim('"')),
+
                         FindReferenceNavigation(dependent.Symbol, principal.Symbol, principalName),
                         FindCollectionNavigation(principal.Symbol, dependent.Symbol)));
                 }
@@ -329,7 +338,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                     principal.FullName,
                     dependentProperty.PropertyName,
                     principalKey.Name,
-                    "fk_" + ToSnakeCase(dependent.TableNameLiteral.Trim('"')) + "_" + ToSnakeCase(dependentProperty.ColumnNameLiteral.Trim('"')),
+
                     isNavigation ? property.Name : name,
                     FindCollectionNavigation(principal.Symbol, dependent.Symbol)));
             }
@@ -423,7 +432,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             "Microsoft.EntityFrameworkCore.CommentAttribute");
         var tableName = ReadStringConstructorArgument(viewAttribute)
             ?? ReadStringConstructorArgument(tableAttribute)
-            ?? DefaultTableName(TrimGenericArity(entity.Name));
+            ?? TrimGenericArity(entity.Name);
         var schema = ReadNamedStringArgument(viewAttribute, "Schema") ?? ReadNamedStringArgument(tableAttribute, "Schema");
         var columns = ReadProperties(entity)
             .Where(static property => FindAttribute(
@@ -440,8 +449,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             Literal(schema),
             Literal(tableName),
             viewAttribute is not null,
+            viewAttribute is not null || tableAttribute is not null,
             ReadIndexDefinitions(entity),
-            Literal(ReadComment(commentAttribute)),
+            Literal(ReadComment(entity, commentAttribute)),
             columns);
     }
 
@@ -512,7 +522,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         var columnName = ReadStringConstructorArgument(columnAttribute)
             ?? ReadNamedStringArgument(columnAttribute, "Name")
-            ?? ToSnakeCase(property.Name);
+            ?? property.Name;
         var typeName = ReadNamedStringArgument(columnAttribute, "TypeName");
         var isPrimaryKey = ReadNamedBoolArgument(columnAttribute, "IsPrimaryKey") ||
                            keyAttribute is not null ||
@@ -542,12 +552,14 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             maxLength,
                 precision,
                 scale,
-                Literal(ReadComment(commentAttribute)),
+                Literal(ReadComment(property, commentAttribute)),
                 ReadUnicode(unicodeAttribute),
             property.SetMethod is { DeclaredAccessibility: Accessibility.Public },
             property.SetMethod?.IsInitOnly == true,
             timestampOnInsert,
-            timestampOnUpdate);
+            timestampOnUpdate,
+            ReadStringConstructorArgument(columnAttribute) is not null ||
+            ReadNamedStringArgument(columnAttribute, "Name") is not null);
     }
 
     private static string GenerateRegistrationSource(
@@ -575,7 +587,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityModelRegistry.Register<{entity.FullName}>(");
             builder.AppendLine($"                global::Perigon.PostgreSQL.Metadata.EntityModel.CreateGenerated<{entity.FullName}>(");
             builder.AppendLine($"                    {entity.SchemaLiteral},");
-            builder.AppendLine($"                    {entity.TableNameLiteral},");
+            var tableName = entity.HasExplicitTableName ? entity.TableNameLiteral
+                : $"global::Perigon.PostgreSQL.Metadata.NamingConventions.DefaultTableName(typeof({entity.FullName}))";
+            builder.AppendLine($"                    {tableName},");
             builder.AppendLine("                    new global::Perigon.PostgreSQL.Metadata.ColumnModel[]");
             builder.AppendLine("                    {");
             foreach (var column in entity.Columns)
@@ -597,7 +611,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 builder.AppendLine("                            null,");
                 builder.AppendLine("                            null,");
                 builder.AppendLine($"                            {BoolLiteral(column.TimestampOnInsert)},");
-                builder.AppendLine($"                            {BoolLiteral(column.TimestampOnUpdate)}),");
+                builder.AppendLine($"                            {BoolLiteral(column.TimestampOnUpdate)},");
+                builder.AppendLine($"                            {BoolLiteral(column.HasExplicitName)}),");
             }
 
             builder.AppendLine("                    },");
@@ -616,13 +631,12 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 }
 
                 builder.AppendLine("                            },");
-                builder.AppendLine($"                            {BoolLiteral(index.IsUnique)},");
-                builder.AppendLine("                            new string[] { },");
-                builder.AppendLine($"                            {Literal(index.Filter)}),");
+                builder.AppendLine($"                            {BoolLiteral(index.IsUnique)}),");
             }
 
             builder.AppendLine("                    },");
-            builder.AppendLine($"                    {entity.CommentLiteral}));");
+            builder.AppendLine($"                    {entity.CommentLiteral},");
+            builder.AppendLine($"                    {BoolLiteral(entity.HasExplicitTableName)}));");
             builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityValueAccessorRegistry.Register<{entity.FullName}>(");
             builder.AppendLine($"                new global::System.Collections.Generic.Dictionary<string, global::System.Func<{entity.FullName}, object?>>");
             builder.AppendLine("                {");
@@ -651,7 +665,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             foreach (var foreignKey in entity.ForeignKeys)
             {
                 builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityModelRegistry.RegisterGeneratedForeignKey<{foreignKey.DependentFullName}, {foreignKey.PrincipalFullName}>(");
-                builder.AppendLine($"                {Literal(foreignKey.ConstraintName)}, {Literal(foreignKey.DependentProperty)}, {Literal(foreignKey.PrincipalProperty)}, global::Perigon.PostgreSQL.Metadata.ReferentialAction.NoAction, {Literal(foreignKey.DependentNavigation)}, {Literal(foreignKey.PrincipalNavigation)});");
+                builder.AppendLine($"                null, {Literal(foreignKey.DependentProperty)}, {Literal(foreignKey.PrincipalProperty)}, global::Perigon.PostgreSQL.Metadata.ReferentialAction.NoAction, {Literal(foreignKey.DependentNavigation)}, {Literal(foreignKey.PrincipalNavigation)});");
             }
         }
 
@@ -718,6 +732,18 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         foreach (var context in contextList)
         {
+            if (context.DbSetProperties.Count > 0)
+            {
+                builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityModelRegistry.RegisterDbSetInitializer<{context.FullName}>(static context =>");
+                builder.AppendLine("            {");
+                foreach (var property in context.DbSetProperties.OrderBy(static property => property.Key, StringComparer.Ordinal))
+                {
+                    builder.AppendLine($"                context.{EscapeIdentifier(property.Key)} = context.CreateGeneratedDbSet<{property.Value}>();");
+                }
+
+                builder.AppendLine("            });");
+            }
+
             if (context.EntityFullNames.Count > 0)
             {
                 builder.AppendLine($"            global::Perigon.PostgreSQL.Metadata.EntityModelRegistry.RegisterContext<{context.FullName}>(");
@@ -770,7 +796,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             builder.AppendLine("        {");
             foreach (var column in writableColumns)
             {
-                builder.AppendLine($"            var ordinal_{column.SafeName} = ResolveOrdinal(reader, {column.ColumnNameLiteral}, {Literal(column.PropertyName)});");
+                var snakeCaseName = column.HasExplicitName ? null : ToSnakeCase(column.PropertyName);
+                builder.AppendLine($"            var ordinal_{column.SafeName} = ResolveOrdinal(reader, {column.ColumnNameLiteral}, {Literal(column.PropertyName)}, {Literal(snakeCaseName)});");
                 builder.AppendLine($"            var typed_{column.SafeName} = ordinal_{column.SafeName} >= 0 && reader.GetFieldType(ordinal_{column.SafeName}) == typeof({column.ReadValueType});");
             }
 
@@ -813,10 +840,12 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         }
 
         builder.AppendLine();
-        builder.AppendLine("        private static int ResolveOrdinal(global::Npgsql.NpgsqlDataReader reader, string columnName, string propertyName)");
+        builder.AppendLine("        private static int ResolveOrdinal(global::Npgsql.NpgsqlDataReader reader, string columnName, string propertyName, string? snakeCaseName)");
         builder.AppendLine("        {");
         builder.AppendLine("            var ordinal = TryGetOrdinal(reader, columnName);");
-        builder.AppendLine("            return ordinal >= 0 ? ordinal : TryGetOrdinal(reader, propertyName);");
+        builder.AppendLine("            if (ordinal < 0 && columnName != propertyName)");
+        builder.AppendLine("                ordinal = TryGetOrdinal(reader, propertyName);");
+        builder.AppendLine("            return ordinal >= 0 || snakeCaseName is null || snakeCaseName == columnName ? ordinal : TryGetOrdinal(reader, snakeCaseName);");
         builder.AppendLine("        }");
         builder.AppendLine();
         builder.AppendLine("        private static int TryGetOrdinal(global::Npgsql.NpgsqlDataReader reader, string name)");
@@ -1000,16 +1029,82 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return null;
     }
 
-    private static string? ReadComment(AttributeData? attribute)
+    private static string? ReadComment(ISymbol symbol, AttributeData? attribute)
     {
-        if (attribute is null)
+        if (attribute is not null)
+        {
+            return ReadStringConstructorArgument(attribute)
+                ?? ReadNamedStringArgument(attribute, "Text")
+                ?? ReadNamedStringArgument(attribute, "Comment");
+        }
+
+        return ReadDocumentationSummary(symbol);
+    }
+
+    private static string? ReadDocumentationSummary(ISymbol symbol)
+    {
+        var xml = symbol.GetDocumentationCommentXml(CultureInfo.InvariantCulture, expandIncludes: false);
+        var summary = ReadSummaryXml(xml);
+        if (summary is not null)
+        {
+            return summary;
+        }
+
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            var trivia = reference.GetSyntax().GetLeadingTrivia();
+            if (reference.SyntaxTree.Options.DocumentationMode == DocumentationMode.None)
+            {
+                var text = trivia.ToFullString();
+                if (!text.Contains("///") && !text.Contains("/**"))
+                {
+                    continue;
+                }
+
+                // This project's compiler did not parse documentation trivia.
+                // Reparse only the trivia preceding this declaration.
+                var parsed = CSharpSyntaxTree.ParseText(text + "class DocumentedDeclaration {}",
+                    CSharpParseOptions.Default.WithDocumentationMode(DocumentationMode.Parse));
+                trivia = parsed.GetRoot().GetFirstToken().LeadingTrivia;
+            }
+
+            var element = trivia.Select(static item => item.GetStructure())
+                .OfType<DocumentationCommentTriviaSyntax>()
+                .SelectMany(static item => item.Content.OfType<XmlElementSyntax>())
+                .FirstOrDefault(static item => item.StartTag.Name.LocalName.ValueText == "summary" &&
+                    !item.ContainsDiagnostics);
+            if (element is not null)
+            {
+                var value = string.Concat(element.DescendantTokens()
+                    .Where(static token => token.IsKind(SyntaxKind.XmlTextLiteralToken) ||
+                        token.IsKind(SyntaxKind.XmlTextLiteralNewLineToken) ||
+                        token.IsKind(SyntaxKind.XmlEntityLiteralToken))
+                    .Select(static token => token.ValueText)).Trim();
+                return string.IsNullOrWhiteSpace(value) ? null : value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadSummaryXml(string? xml)
+    {
+        if (string.IsNullOrWhiteSpace(xml))
         {
             return null;
         }
 
-        return ReadStringConstructorArgument(attribute)
-            ?? ReadNamedStringArgument(attribute, "Text")
-            ?? ReadNamedStringArgument(attribute, "Comment");
+        try
+        {
+            var document = XElement.Parse(xml, LoadOptions.PreserveWhitespace);
+            var summary = document.Descendants("summary").FirstOrDefault();
+            var value = summary?.Value.Trim();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+        catch (System.Xml.XmlException)
+        {
+            return null;
+        }
     }
 
     private static IReadOnlyList<IndexInfo> ReadIndexDefinitions(INamedTypeSymbol entity)
@@ -1038,8 +1133,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             indexes.Add(new IndexInfo(
                 ReadNamedStringArgument(attribute, "Name"),
                 propertyNames,
-                ReadNamedBoolArgument(attribute, "IsUnique"),
-                ReadNamedStringArgument(attribute, "Filter")));
+                ReadNamedBoolArgument(attribute, "IsUnique")));
         }
 
         return indexes;
@@ -1167,12 +1261,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return builder.ToString();
     }
 
-    private static string DefaultTableName(string typeName)
-    {
-        var name = ToSnakeCase(typeName);
-        return name.EndsWith("s", StringComparison.Ordinal) ? name : name + "s";
-    }
-
     private static string Literal(string? value)
     {
         if (value is null)
@@ -1286,15 +1374,18 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
     private sealed class DbSetInfo
     {
-        public DbSetInfo(INamedTypeSymbol contextType, INamedTypeSymbol entityType)
+        public DbSetInfo(INamedTypeSymbol contextType, INamedTypeSymbol entityType, string? propertyName)
         {
             ContextType = contextType;
             EntityType = entityType;
+            PropertyName = propertyName;
         }
 
         public INamedTypeSymbol ContextType { get; }
 
         public INamedTypeSymbol EntityType { get; }
+
+        public string? PropertyName { get; }
     }
 
     private sealed class ContextInfo
@@ -1313,6 +1404,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public string SafeName { get; }
 
         public IReadOnlyCollection<string> EntityFullNames => _entityFullNames;
+
+        public Dictionary<string, string> DbSetProperties { get; } = new(StringComparer.Ordinal);
 
         public IReadOnlyList<MigrationInfo> Migrations => _migrations;
 
@@ -1352,6 +1445,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             string schemaLiteral,
             string tableNameLiteral,
             bool isView,
+            bool hasExplicitTableName,
             IReadOnlyList<IndexInfo> indexes,
             string commentLiteral,
             IReadOnlyList<ColumnInfo> columns)
@@ -1362,6 +1456,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             SchemaLiteral = schemaLiteral;
             TableNameLiteral = tableNameLiteral;
             IsView = isView;
+            HasExplicitTableName = hasExplicitTableName;
             Indexes = indexes;
             CommentLiteral = commentLiteral;
             Columns = columns;
@@ -1378,6 +1473,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public string TableNameLiteral { get; }
 
         public bool IsView { get; }
+
+        public bool HasExplicitTableName { get; }
 
         public IReadOnlyList<IndexInfo> Indexes { get; }
 
@@ -1415,13 +1512,12 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
     private sealed class ForeignKeyInfo
     {
-        public ForeignKeyInfo(string dependentFullName, string principalFullName, string dependentProperty, string principalProperty, string constraintName, string? dependentNavigation, string? principalNavigation)
+        public ForeignKeyInfo(string dependentFullName, string principalFullName, string dependentProperty, string principalProperty, string? dependentNavigation, string? principalNavigation)
         {
             DependentFullName = dependentFullName;
             PrincipalFullName = principalFullName;
             DependentProperty = dependentProperty;
             PrincipalProperty = principalProperty;
-            ConstraintName = constraintName;
             DependentNavigation = dependentNavigation;
             PrincipalNavigation = principalNavigation;
         }
@@ -1430,19 +1526,17 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public string PrincipalFullName { get; }
         public string DependentProperty { get; }
         public string PrincipalProperty { get; }
-        public string ConstraintName { get; }
         public string? DependentNavigation { get; }
         public string? PrincipalNavigation { get; }
     }
 
     private sealed class IndexInfo
     {
-        public IndexInfo(string? name, IReadOnlyList<string> propertyNames, bool isUnique, string? filter)
+        public IndexInfo(string? name, IReadOnlyList<string> propertyNames, bool isUnique)
         {
             Name = name;
             PropertyNames = propertyNames;
             IsUnique = isUnique;
-            Filter = filter;
         }
 
         public string? Name { get; }
@@ -1450,8 +1544,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public IReadOnlyList<string> PropertyNames { get; }
 
         public bool IsUnique { get; }
-
-        public string? Filter { get; }
     }
 
     private sealed class MaterializerInfo
@@ -1491,7 +1583,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             bool canWrite,
             bool isInitOnly,
             bool timestampOnInsert,
-            bool timestampOnUpdate)
+            bool timestampOnUpdate,
+            bool hasExplicitName)
         {
             PropertyName = propertyName;
             MemberAccessName = EscapeIdentifier(propertyName);
@@ -1514,6 +1607,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             IsInitOnly = isInitOnly;
             TimestampOnInsert = timestampOnInsert;
             TimestampOnUpdate = timestampOnUpdate;
+            HasExplicitName = hasExplicitName;
         }
 
         public string PropertyName { get; }
@@ -1557,5 +1651,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         public bool TimestampOnInsert { get; }
 
         public bool TimestampOnUpdate { get; }
+
+        public bool HasExplicitName { get; }
     }
 }

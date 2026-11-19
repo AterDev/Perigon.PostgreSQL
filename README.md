@@ -103,7 +103,7 @@ public sealed class AppDbContext : DbContext
 
 实体统一继承带 `IsDeleted` 的基类时，可在 `OnModelCreating` 中调用一次
 `EnableSoftDeleteFilter<EntityBase>("NotDeleted", entity => !entity.IsDeleted)`，覆盖匹配的实体。
-匹配实体的唯一索引自动限定为未删除行。`IndexAttribute.Filter` 可附加 PostgreSQL 谓词，索引默认命名规则同样适用。
+匹配实体的唯一索引自动限定为未删除行。需要附加 PostgreSQL 谓词时，在 Fluent API 中配置 `HasIndex(...).HasFilter(...)`。
 
 `Set<T>()` 创建的查询默认应用全部过滤器。需要明确跳过部分具名过滤器时，使用
 `SetWithoutFilters<T>("FilterName", ...)`；需要跳过全部过滤器时，使用
@@ -187,6 +187,12 @@ modelBuilder.Entity<User>(entity =>
 或其他原生 SQL 不经过该策略，原生 SQL 需要自行维护时间和主键值。
 
 ## 关系与 Include
+
+默认表名和列名使用 PascalCase，表名由 Humanizer 生成英文复数。例如 `ArticleCategory` 对应 `"ArticleCategories"`，`Person` 对应 `"People"`。在 DbContext 选项上调用 `UseSnakeCaseNaming()` 时，复数表名和列名再转换为 snake_case。显式表名和列名优先。
+
+也可在项目中使用 `[assembly: UseSnakeCaseNaming]` 设置程序集默认值，再在个别 DbContext 中用 `UseNamingConvention(NamingConvention.PascalCase)` 覆盖。旧表名如 `article_categorys` 可用 `ToTable("article_categorys")` 显式保留，或通过重命名迁移改为 `article_categories`。切换命名前请审查迁移，并同步使用物理名称的原生 SQL 和索引谓词。
+
+表和列备注可由实体或属性上的 `[Comment("备注")]` 配置，也可通过 Fluent API 的 `HasComment` 覆盖。源码生成器将类和属性的 XML `<summary>` 作为默认备注来源；最终备注参与建表与迁移。
 
 关系元数据可以使用命名约定、`[ForeignKey]` 或 Fluent API 配置。源生成器会为同一
 `DbContext` 中可静态识别的单列关系注册 AOT 安全的导航 loader；导航属性应标记
@@ -309,9 +315,11 @@ dotnet perigon migrations script --project .\src\App\App.csproj --from 0 --to <m
 dotnet perigon database update --project .\src\App\App.csproj --context AppDbContext --connection $connectionString
 ```
 
-`migrations add` 会构建项目，运行当前上下文配置并生成 `Up`、`Down` 和新的 model snapshot。请先审查并提交生成文件，再对目标数据库运行 `database update`。设计时上下文需要 public 无参构造函数或单 `string connectionString` 构造函数；省略 `--context` 时项目必须恰好有一个 `DbContext`。多目标框架项目使用 `--framework` 指定目标。
+`migrations add` 会构建项目，运行当前上下文配置并生成 `Up`、`Down` 和新的 model snapshot。请先审查并提交生成文件，再对目标数据库运行 `database update`。设计时支持公开的 `DbContextOptions<TContext>`、`DbContextOptions`、单字符串或无参构造函数。生成迁移时工具传入未配置连接的 options，模型配置需能离线运行。影响模型的设置应由上下文或程序集共享；省略 `--context` 时项目必须恰好有一个 `DbContext`。多目标框架项目使用 `--framework` 指定目标。
 
 已通过 `EnsureCreated` 创建的数据库，可在项目只有一个初始迁移时运行 `database baseline`。它会核对快照中的受管表结构，匹配后记录初始 migration，不会重建表。增量迁移和 `EnsureCreated` 不应混用。
+
+目标 PostgreSQL 数据库不存在时，迁移会先创建空数据库，再按迁移记录建立结构。连接账号需要创建数据库的权限。
 
 运行时也可以调用 `await db.MigrateAsync()`，或通过 `await db.MigrateAsync("<migration-id>")` 指定目标版本；目标为 `"0"` 时回滚全部迁移。history 默认存于 `public."_PerigonMigrationsHistory"`，可使用 `UseMigrationsHistoryTable(tableName, schema)` 配置。每条迁移的 DDL 与 history 更新在同一事务中执行，并使用 PostgreSQL advisory lock 串行化。
 
@@ -390,6 +398,8 @@ public sealed class TenantDbContext(DbContextOptions<TenantDbContext> options)
 旧代码实现 `IPooledDbContext.ResetState()` 仍可继续使用，作为兼容性钩子会在归还池时调用；新代码优先覆盖 `OnPoolReturn()`。如果两者都实现，两个钩子都会执行，均不得在其中启动数据库操作或保留上一租约的状态。
 
 池化上下文的全局查询过滤器不能捕获局部对象或局部变量，否则会在构建模型时直接报错。请求相关属性必须在每次租用后设置，并在归还时通过 `OnPoolReturn()`（或兼容的 `ResetState()`）清除。
+
+可以声明 `public DbSet<User> Users { get; set; }`。包内源生成器负责赋值，首次使用时才加载模型，池化上下文每次租用时重新绑定。泛型调用可直接使用公开的 `context.Set<User>()`。启用可空引用分析时，编译器无法推断自动赋值，可在上下文类型范围内抑制 CS8618。
 
 同一租约内会缓存 `DbSet`；归还池时清除这些包装对象，新租约使用重新绑定的 `DbSet`，稳定模型继续复用。旧的 `DbSet`、查询及 Raw SQL 对象不能跨 scope 使用。上下文本身也不能保存到 scope 外：由于实例会被重新租用，旧的上下文引用无法与新租约区分。手动释放上下文后，它仍会等到所属 scope 结束才归还池；应在结束 scope 前等待所有数据库操作，并在所有 scope 结束后再释放根容器。
 

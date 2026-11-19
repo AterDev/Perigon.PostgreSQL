@@ -52,6 +52,7 @@ using (var pooledProvider = pooledServices.BuildServiceProvider())
     var reused = nextScope.ServiceProvider.GetRequiredService<SmokePooledContext>();
     if (!ReferenceEquals(first, reused) || reused.MinimumAge != 0)
         throw new InvalidOperationException("NativeAOT smoke test expected pooled context reuse.");
+    _ = reused.Users.ToQuerySql();
     try
     {
         _ = oldSet.ToQuerySql();
@@ -189,13 +190,13 @@ if (!string.IsNullOrWhiteSpace(connectionString))
     await liveDb.EnsureCreatedAsync();
     await liveDb.Users.BulkInsertAsync(
     [
-        new SmokeUser { UserName = "aot-live", Age = 21, Tags = ["aot", "live"] }
+        new SmokeUser { UserName = "aot-live", Age = 21, Tags = ["aot", "live"], Status = SmokeUserStatus.Active }
     ]);
 
     var liveRows = await liveDb.Users
-        .Where(user => user.UserName == "aot-live")
+        .Where(user => user.UserName == "aot-live" && user.Status == SmokeUserStatus.Active)
         .ToListAsync();
-    if (liveRows.Count != 1)
+    if (liveRows.Count != 1 || liveRows[0].Status != SmokeUserStatus.Active)
     {
         throw new InvalidOperationException("NativeAOT live smoke expected one inserted row.");
     }

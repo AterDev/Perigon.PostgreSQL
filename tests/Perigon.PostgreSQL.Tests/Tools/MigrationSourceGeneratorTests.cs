@@ -2,6 +2,8 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Perigon.PostgreSQL;
 using Perigon.PostgreSQL.Migrations;
+using Perigon.PostgreSQL.Options;
+using System.Reflection;
 
 namespace Perigon.PostgreSQL.Tests.Tools;
 
@@ -89,9 +91,31 @@ public sealed class MigrationSourceGeneratorTests
     {
         Assert.False(MigrationCli.IsMigrationCommand(["database", "scaffold"]));
     }
+
+    [Fact]
+    public async Task CreatesOptionsOnlyContextWithReflectedOptionsBuilder()
+    {
+        var createContext = typeof(ProjectContext).GetMethod("CreateContext", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(createContext);
+
+        var context = Assert.IsType<OptionsOnlyMigrationCliContext>(createContext!.Invoke(
+            null,
+            [typeof(OptionsOnlyMigrationCliContext), "Host=localhost;Database=cli_options;Username=test;Password=test"]));
+        await using (context)
+        {
+            var connectionString = new Npgsql.NpgsqlConnectionStringBuilder(context.GetDataSource().ConnectionString);
+            Assert.Equal("localhost", connectionString.Host);
+            Assert.Equal("cli_options", connectionString.Database);
+        }
+    }
 }
 
 public sealed class MigrationCliTestContext : DbContext
+{
+}
+
+public sealed class OptionsOnlyMigrationCliContext(DbContextOptions<OptionsOnlyMigrationCliContext> options)
+    : DbContext(options)
 {
 }
 

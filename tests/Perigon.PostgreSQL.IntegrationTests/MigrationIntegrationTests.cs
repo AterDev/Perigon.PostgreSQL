@@ -9,6 +9,45 @@ namespace Perigon.PostgreSQL.IntegrationTests;
 [Collection(PostgresCollection.Name)]
 public sealed class MigrationIntegrationTests(DockerPostgresFixture fixture)
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MigrateAsyncCreatesMissingDatabaseAppliesMigrationAndIsRepeatable(bool useExplicitDataSource)
+    {
+        var databaseName = "perigon_missing_" + Guid.NewGuid().ToString("N")[..12];
+        var connectionString = new NpgsqlConnectionStringBuilder(ForDatabase(databaseName)) { Pooling = false }.ConnectionString;
+        var adminConnectionString = ForDatabase("postgres");
+
+        Assert.False(await DatabaseExistsAsync(adminConnectionString, databaseName));
+
+        try
+        {
+            await using (var db = new MissingDatabaseMigrationTestDbContext(
+                useExplicitDataSource ? adminConnectionString : connectionString))
+            {
+                if (useExplicitDataSource)
+                {
+                    var settings = new NpgsqlConnectionStringBuilder(connectionString) { PersistSecurityInfo = true };
+                    await using var dataSource = NpgsqlDataSource.Create(settings.ConnectionString);
+                    await db.MigrateWithDataSourceAsync(dataSource);
+                    await db.MigrateWithDataSourceAsync(dataSource);
+                }
+                else
+                {
+                    await db.MigrateAsync();
+                    await db.MigrateAsync();
+                }
+            }
+
+            Assert.True(await TableExistsAsync(connectionString, "missing_database_items"));
+            Assert.Equal(1L, await ScalarLongAsync(connectionString, "SELECT count(*) FROM \"_PerigonMigrationsHistory\""));
+        }
+        finally
+        {
+            await DropDatabaseAsync(adminConnectionString, databaseName);
+        }
+    }
+
     [Fact]
     public async Task MigrateAppliesInOrderIsRepeatableConcurrentAndCanRollback()
     {
@@ -91,6 +130,41 @@ public sealed class MigrationIntegrationTests(DockerPostgresFixture fixture)
         return builder.ConnectionString;
     }
 
+    private string ForDatabase(string database)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+        {
+            Database = database,
+            SearchPath = "public"
+        };
+        return builder.ConnectionString;
+    }
+
+    private static async Task<bool> DatabaseExistsAsync(string connectionString, string databaseName)
+    {
+        var admin = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            Database = "postgres"
+        };
+        await using var connection = new NpgsqlConnection(admin.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", connection);
+        command.Parameters.AddWithValue(databaseName);
+        return (bool)(await command.ExecuteScalarAsync())!;
+    }
+
+    private static async Task DropDatabaseAsync(string connectionString, string databaseName)
+    {
+        var admin = new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            Database = "postgres"
+        };
+        await using var connection = new NpgsqlConnection(admin.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{databaseName.Replace("\"", "\"\"", StringComparison.Ordinal)}\"", connection);
+        await command.ExecuteNonQueryAsync();
+    }
+
     private static async Task<bool> TableExistsAsync(string connectionString, string table)
     {
         await using var connection = new NpgsqlConnection(connectionString);
@@ -129,6 +203,19 @@ public sealed class MigrationIntegrationTests(DockerPostgresFixture fixture)
 
 public sealed class MigrationTestDbContext(string connectionString, string historySchema)
     : DbContext(builder => builder.UsePostgres(connectionString).UseMigrationsHistoryTable("_History", historySchema));
+
+public sealed class MissingDatabaseMigrationTestDbContext(string connectionString)
+    : DbContext(builder => builder.UsePostgres(connectionString));
+
+[Migration(typeof(MissingDatabaseMigrationTestDbContext), "3000_missing_database_initial")]
+public sealed class MissingDatabaseMigrationTestInitial : Migration
+{
+    public override void Up(MigrationBuilder migrationBuilder) =>
+        migrationBuilder.Sql("CREATE TABLE missing_database_items (id integer PRIMARY KEY)");
+
+    public override void Down(MigrationBuilder migrationBuilder) =>
+        migrationBuilder.Sql("DROP TABLE missing_database_items");
+}
 
 [Migration(typeof(MigrationTestDbContext), "1000_initial")]
 public sealed class MigrationTestInitial : Migration

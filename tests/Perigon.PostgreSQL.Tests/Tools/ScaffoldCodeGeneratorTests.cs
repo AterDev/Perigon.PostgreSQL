@@ -103,7 +103,10 @@ public sealed class ScaffoldCodeGeneratorTests
                 ],
                 ["order_id", "line_no"],
                 [],
-                [new IndexModel("ix_order_lines_status", ["status"], false, ["line_no"], "status <> ''", "gin")]),
+                [
+                    new IndexModel("ix_order_lines_status", ["status"], false, ["line_no"], "status <> ''", "gin"),
+                    new IndexModel("uq_order_lines_active_line_no", ["line_no"], true, [], "status = 'active'")
+                ]),
             new TableModel(
                 "public",
                 "shipments",
@@ -156,6 +159,8 @@ public sealed class ScaffoldCodeGeneratorTests
         Assert.Contains(".IncludeProperties(x => x.LineNo)", context);
         Assert.Contains(".HasFilter(\"status <> ''\")", context);
         Assert.Contains(".HasMethod(\"gin\")", context);
+        Assert.Contains(".HasDatabaseName(\"uq_order_lines_active_line_no\")", context);
+        Assert.Contains(".HasFilter(\"status = 'active'\")", context);
         Assert.Contains("entity.HasOne(x => x.OrderLine)", context);
         Assert.Contains(".HasForeignKey(x => new { x.OrderId, x.LineNo })", context);
 

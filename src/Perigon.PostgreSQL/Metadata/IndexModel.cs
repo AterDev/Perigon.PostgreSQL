@@ -22,6 +22,8 @@ public sealed class IndexModel
 
     public string IndexName { get; }
 
+    internal string? ConfiguredName { get; init; }
+
     public EntityModel Entity { get; }
 
     public IReadOnlyList<ColumnModel> Columns { get; }

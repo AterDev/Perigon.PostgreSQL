@@ -1,5 +1,34 @@
 # Release Notes
 
+## 0.3.7 (Tools)
+
+- Uses the 0.3.6 runtime when generating migrations for direct enum properties.
+
+## 0.3.6
+
+- Maps scalar and nullable enum properties to PostgreSQL `smallint` by default, including Native AOT reads and writes.
+
+- Removed `IndexAttribute.Filter`. Configure explicit partial index predicates with Fluent `HasFilter`. Scaffolding emits Fluent configuration for existing partial indexes.
+
+## 0.3.6 (Tools)
+
+- Added `dotnet perigon --version` and `dotnet perigon -v`.
+
+## 0.3.5
+
+- Migration commands support DbContextOptions-only constructors. Building a model or generating SQL requires no database connection.
+- Exposed typed options construction through DbContextOptionsBuilder.Build<TContext>().
+
+## 0.3.4
+
+- Made `DbContext.Set<T>()` public and added source-generated initialization for writable automatic `DbSet<T>` properties, including pooled and Native AOT contexts.
+- Default table and column names use PascalCase. Humanizer pluralizes default table names before the selected casing is applied. Opt into snake_case through context options or an assembly attribute, and explicitly map any legacy names that differ from the new plural form.
+- Source generation uses entity and property XML summaries as fallback PostgreSQL comments. Explicit attributes and Fluent configuration take precedence.
+
+## 0.3.3
+
+- Migration execution creates missing PostgreSQL databases before applying migrations.
+
 ## 0.3.1
 
 - Added `ProjectTo<TDto>()` for automatic same-name projection of compatible public writable DTO properties.
