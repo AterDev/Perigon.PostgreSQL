@@ -124,6 +124,9 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         var contexts = new Dictionary<string, ContextInfo>(StringComparer.Ordinal);
         var materializers = new Dictionary<string, MaterializerInfo>(StringComparer.Ordinal);
         var reportedUnsupported = new HashSet<string>(StringComparer.Ordinal);
+        var entityTypes = new HashSet<ITypeSymbol>(
+            dbSets.OfType<DbSetInfo>().Select(static dbSet => dbSet.EntityType),
+            SymbolEqualityComparer.Default);
 
         void ReportUnsupported(INamedTypeSymbol type)
         {
@@ -143,7 +146,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 continue;
             }
 
-            var info = ReadEntity(dbSet.EntityType);
+            var info = ReadEntity(dbSet.EntityType, entityTypes);
             if (distinct.TryGetValue(info.FullName, out var existing))
             {
                 info = existing;
@@ -182,7 +185,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             }
 
             var info = ReadMaterializer(type);
-            materializers[info.FullName] = info;
+            if (!distinct.ContainsKey(info.FullName))
+            {
+                materializers[info.FullName] = info;
+            }
         }
 
         foreach (var type in migrationTypes
@@ -380,9 +386,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         foreach (var property in ReadProperties(principal))
         {
             if ((preferredName is null || property.Name == preferredName) &&
-                property.Type is INamedTypeSymbol { IsGenericType: true } named &&
-                named.TypeArguments.Length == 1 &&
-                SymbolEquals(named.TypeArguments[0] as INamedTypeSymbol ?? dependent, dependent))
+                CollectionElementType(property.Type) is { } element &&
+                SymbolEquals(element, dependent))
             {
                 return property;
             }
@@ -419,7 +424,39 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return SymbolEqualityComparer.Default.Equals(left, right);
     }
 
-    private static EntityInfo ReadEntity(INamedTypeSymbol entity)
+    private static INamedTypeSymbol? CollectionElementType(ITypeSymbol type)
+    {
+        if (type is IArrayTypeSymbol array)
+        {
+            return array.ElementType as INamedTypeSymbol;
+        }
+
+        if (type is not INamedTypeSymbol named)
+        {
+            return null;
+        }
+
+        var sequence = named.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T
+            ? named
+            : named.AllInterfaces.FirstOrDefault(static item =>
+                item.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T);
+        return sequence?.TypeArguments[0] as INamedTypeSymbol;
+    }
+
+    private static bool IsNavigation(IPropertySymbol property, HashSet<ITypeSymbol> entityTypes)
+    {
+        if (!entityTypes.Contains(property.Type) &&
+            (CollectionElementType(property.Type) is not { } element || !entityTypes.Contains(element)))
+        {
+            return false;
+        }
+
+        return FindAttribute(property.GetAttributes(),
+            "Perigon.PostgreSQL.Attributes.ColumnAttribute",
+            "System.ComponentModel.DataAnnotations.Schema.ColumnAttribute") is null;
+    }
+
+    private static EntityInfo ReadEntity(INamedTypeSymbol entity, HashSet<ITypeSymbol> entityTypes)
     {
         var viewAttribute = FindAttribute(entity.GetAttributes(), "Perigon.PostgreSQL.Attributes.ViewAttribute");
         var tableAttribute = FindAttribute(
@@ -439,6 +476,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 property.GetAttributes(),
                 "Perigon.PostgreSQL.Attributes.NotMappedAttribute",
                 "System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute") is null)
+            .Where(property => !IsNavigation(property, entityTypes))
             .Select(property => ReadColumn(entity, property))
             .ToArray();
 
@@ -678,7 +716,10 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 if (FindCollectionNavigationProperty(principal.Symbol, dependentEntity.Symbol, foreignKey.PrincipalNavigation!) is not { SetMethod.DeclaredAccessibility: Accessibility.Public } navigation ||
                     navigation.SetMethod.IsInitOnly ||
                     navigation.Type is not INamedTypeSymbol { IsGenericType: true } collectionType ||
-                    collectionType.OriginalDefinition.ToDisplayString() != "System.Collections.Generic.List<T>" ||
+                    collectionType.OriginalDefinition.ToDisplayString() is not
+                        ("System.Collections.Generic.List<T>" or "System.Collections.Generic.ICollection<T>" or
+                         "System.Collections.Generic.IList<T>" or "System.Collections.Generic.IEnumerable<T>" or
+                         "System.Collections.Generic.IReadOnlyCollection<T>" or "System.Collections.Generic.IReadOnlyList<T>") ||
                     !HasPublicParameterlessConstructor(principal.Symbol) ||
                     !HasPublicParameterlessConstructor(dependentEntity.Symbol))
                 {

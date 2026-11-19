@@ -84,7 +84,7 @@ public sealed class EntityModel
             return ApplyAssemblyNamingConvention(generated, entityType);
         }
 
-        return ApplyAssemblyNamingConvention(Build(entityType), entityType);
+        return ApplyAssemblyNamingConvention(Build(entityType, EntityModelRegistry.GetRegisteredEntityTypes()), entityType);
     }
 
     private static EntityModel ApplyAssemblyNamingConvention(EntityModel model, Type entityType)
@@ -166,7 +166,8 @@ public sealed class EntityModel
     }
 
     private static EntityModel Build(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType)
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type entityType,
+        IReadOnlySet<Type> registeredEntityTypes)
     {
         if (IsNotMapped(entityType))
         {
@@ -181,7 +182,7 @@ public sealed class EntityModel
         var schema = view?.Schema ?? perigonTable?.Schema ?? schemaTable?.Schema;
         var nullability = new NullabilityInfoContext();
         var properties = entityType.GetProperties(BindingFlags.Instance | BindingFlags.Public)
-            .Where(p => p.GetMethod is not null && !IsNotMapped(p))
+            .Where(p => p.GetMethod is not null && !IsNotMapped(p) && !IsNavigation(p, registeredEntityTypes))
             .ToArray();
 
         var columns = new List<ColumnModel>(properties.Length);
@@ -376,6 +377,63 @@ public sealed class EntityModel
     {
         return member.GetCustomAttribute<NotMappedAttribute>() is not null ||
                member.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute>() is not null;
+    }
+
+    private static bool IsNavigation(PropertyInfo property, IReadOnlySet<Type> registeredEntityTypes)
+    {
+        if (HasExplicitColumnMapping(property))
+        {
+            return false;
+        }
+
+        var propertyType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+        if (registeredEntityTypes.Contains(propertyType))
+        {
+            return true;
+        }
+
+        var elementType = GetCollectionElementType(property.PropertyType);
+        if (elementType is not null && registeredEntityTypes.Contains(elementType))
+        {
+            return true;
+        }
+
+        // A ForeignKey attribute on a reference or collection property is the
+        // reflection fallback's explicit navigation marker. On a scalar FK
+        // property it points at the navigation and must remain a column.
+        return property.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.ForeignKeyAttribute>() is not null &&
+               !IsScalarProperty(property.PropertyType);
+    }
+
+    private static bool HasExplicitColumnMapping(PropertyInfo property)
+    {
+        return property.GetCustomAttribute<ColumnAttribute>() is not null ||
+               property.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.ColumnAttribute>() is not null;
+    }
+
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2070",
+        Justification = "The reflection fallback inspects collection interfaces to identify navigation properties. Source-generated models do not use this path.")]
+    private static Type? GetCollectionElementType(Type type)
+    {
+        if (type.IsArray)
+        {
+            return type.GetElementType();
+        }
+
+        var sequence = type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IEnumerable<>)
+            ? type
+            : type.GetInterfaces().FirstOrDefault(static item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+        return sequence?.GetGenericArguments()[0];
+    }
+
+    private static bool IsScalarProperty(Type type)
+    {
+        var actual = Nullable.GetUnderlyingType(type) ?? type;
+        return actual.IsEnum || actual.IsPrimitive || actual == typeof(string) || actual == typeof(decimal) ||
+               actual == typeof(Guid) || actual == typeof(DateTime) || actual == typeof(DateTimeOffset) ||
+               actual == typeof(TimeSpan) || actual == typeof(byte[]);
     }
 
     private static bool IsNullable(PropertyInfo property, NullabilityInfoContext nullability)

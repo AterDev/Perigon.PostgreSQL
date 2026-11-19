@@ -26,7 +26,8 @@ public sealed class EntityModelGeneratorTests
             public sealed class User
             {
                 public int Id { get; set; }
-                public List<Blog> Blogs { get; set; } = new();
+                public ICollection<Blog> Blogs { get; set; } = new List<Blog>();
+                public string[] Tags { get; set; } = System.Array.Empty<string>();
             }
 
             public sealed class Blog
@@ -48,6 +49,9 @@ public sealed class EntityModelGeneratorTests
         Assert.Contains("\"User\", navigationExpression, static (dependent, principal)", generated);
         Assert.Contains("NavigationIncludeRegistry.Register<global::Demo.User>", generated);
         Assert.Contains("LoadCollectionAsync<global::Demo.User, global::Demo.Blog, int>", generated);
+        Assert.DoesNotContain("[\"Blogs\"] = static entity", generated);
+        Assert.DoesNotContain("[\"User\"] = static entity", generated);
+        Assert.Contains("[\"Tags\"] = static entity", generated);
     }
 
     [Fact]

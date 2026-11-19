@@ -1,5 +1,3 @@
-using System.ComponentModel.DataAnnotations.Schema;
-
 namespace Perigon.PostgreSQL.NativeAotSmoke;
 
 public sealed class SmokeNavigationContext : DbContext
@@ -14,14 +12,14 @@ public sealed class SmokeOwner
 {
     public int Id { get; set; }
     public string Name { get; set; } = "";
-    [NotMapped] public List<SmokePost> Posts { get; set; } = [];
+    public ICollection<SmokePost> Posts { get; set; } = [];
 }
 
 public sealed class SmokePost
 {
     public int Id { get; set; }
     public int SmokeOwnerId { get; set; }
-    [NotMapped] public SmokeOwner? SmokeOwner { get; set; }
+    public SmokeOwner? SmokeOwner { get; set; }
 }
 
 public sealed class SmokeAggregateRow

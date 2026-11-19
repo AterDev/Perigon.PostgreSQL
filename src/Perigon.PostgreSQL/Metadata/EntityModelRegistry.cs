@@ -103,6 +103,14 @@ public static class EntityModelRegistry
         }
     }
 
+    internal static IReadOnlySet<Type> GetRegisteredEntityTypes()
+    {
+        lock (Sync)
+        {
+            return Models.Keys.ToHashSet();
+        }
+    }
+
     public static void RegisterContext<TContext>(IReadOnlyList<EntityModel> models)
         where TContext : DbContext
     {

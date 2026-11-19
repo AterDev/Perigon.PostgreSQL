@@ -72,6 +72,25 @@ public sealed class EntityModelTests
     }
 
     [Fact]
+    public void Runtime_model_excludes_registered_reference_and_collection_navigations()
+    {
+        var model = EntityModel.For<RuntimeNavigationEntity>();
+
+        Assert.False(model.IsGenerated);
+        Assert.Equal(
+            [nameof(RuntimeNavigationEntity.Id), nameof(RuntimeNavigationEntity.Tags)],
+            model.Columns.Select(column => column.PropertyName));
+    }
+
+    public sealed class RuntimeNavigationEntity
+    {
+        public int Id { get; set; }
+        public string[] Tags { get; set; } = [];
+        public ConventionUser? Owner { get; set; }
+        public ICollection<ConventionUser> Members { get; set; } = [];
+    }
+
+    [Fact]
     public void Standard_data_annotations_are_used_for_metadata()
     {
         var model = EntityModel.For<StandardAnnotatedUser>();

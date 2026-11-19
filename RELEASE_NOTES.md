@@ -1,5 +1,13 @@
 # Release Notes
 
+## 0.3.8 (Tools)
+
+- Uses the runtime that recognizes navigation properties when generating migration models.
+
+## 0.3.7
+
+- Recognizes references and collections of registered entity types without requiring a NotMapped attribute. Scalar arrays and explicitly mapped columns remain supported.
+
 ## 0.3.7 (Tools)
 
 - Uses the 0.3.6 runtime when generating migrations for direct enum properties.
