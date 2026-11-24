@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.4.0
+
+- Reuses the built-in `System.ComponentModel.DataAnnotations` / `System.ComponentModel.DataAnnotations.Schema` mapping attributes instead of defining duplicates. `Perigon.PostgreSQL.Attributes.TableAttribute`, `ColumnAttribute` and `NotMappedAttribute` were removed: use `[Table]`, `[Column]` (with `TypeName`), `[Key]`, `[DatabaseGenerated(DatabaseGeneratedOption.Identity|Computed|None)]` and `[NotMapped]` from the SDK.
+- PostgreSQL-specific attributes remain in `Perigon.PostgreSQL.Attributes`: `[View]`, `[Index]`, `[Precision]`, `[Comment]`, `[Unicode]`, `[AutoTimestamp]` and `[assembly: UseSnakeCaseNaming]`.
+
 ## 0.3.8 (Tools)
 
 - Uses the runtime that recognizes navigation properties when generating migration models.

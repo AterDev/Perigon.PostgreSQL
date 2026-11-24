@@ -9,11 +9,11 @@
     <ToolCommandName>dotnet-perigon</ToolCommandName>
     <PackageId>Perigon.PostgreSQL.Tools</PackageId>
     <Title>Perigon.PostgreSQL.Tools</Title>
-    <Version>0.3.8</Version>
+    <Version>0.4.0</Version>
     <Description>Command line tools for Perigon.PostgreSQL migrations, reverse engineering, and scaffolding.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <PackageReleaseNotes>Supports options-only contexts in migration commands and explicit typed options construction. See RELEASE_NOTES.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>Scaffolding and migrations align with the runtime 0.4.0 DataAnnotations-only model attributes. See RELEASE_NOTES.md.</PackageReleaseNotes>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
