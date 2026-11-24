@@ -1,4 +1,5 @@
 using Perigon.PostgreSQL.Attributes;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Perigon.PostgreSQL.NativeAotSmoke;
 

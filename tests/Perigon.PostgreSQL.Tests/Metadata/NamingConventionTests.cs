@@ -2,7 +2,7 @@ using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Options;
 using Perigon.PostgreSQL.Sql;
 using Perigon.PostgreSQL.Tests.Models;
-using Perigon.PostgreSQL.Attributes;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Perigon.PostgreSQL.Tests.Metadata;
 

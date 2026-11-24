@@ -218,7 +218,7 @@ public sealed class EntityModelGeneratorTests
     {
         const string source = """
             using Perigon.PostgreSQL;
-            using Perigon.PostgreSQL.Attributes;
+            using System.ComponentModel.DataAnnotations.Schema;
 
             namespace Demo;
 
@@ -482,6 +482,7 @@ public sealed class EntityModelGeneratorTests
         const string source = """
             using Perigon.PostgreSQL;
             using Perigon.PostgreSQL.Attributes;
+            using System.ComponentModel.DataAnnotations.Schema;
 
             namespace Demo;
 

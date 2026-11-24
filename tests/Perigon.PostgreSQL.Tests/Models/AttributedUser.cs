@@ -1,17 +1,20 @@
-using Perigon.PostgreSQL.Attributes;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Perigon.PostgreSQL.Tests.Models;
 
 [Table("app_users", Schema = "security")]
 public sealed class AttributedUser
 {
-    [Column("user_id", IsPrimaryKey = true, IsIdentity = true)]
+    [Key]
+    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    [Column("user_id")]
     public int Key { get; set; }
 
     [Column("display_name")]
     public string Name { get; set; } = "";
 
-    [Column("roles", IsArray = true)]
+    [Column("roles")]
     public string[] Roles { get; set; } = [];
 
     [NotMapped]

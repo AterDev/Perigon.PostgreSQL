@@ -1,4 +1,5 @@
 using Perigon.PostgreSQL.Attributes;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Perigon.PostgreSQL.IntegrationTests;
 
@@ -24,7 +25,7 @@ public sealed class GuidGenerationRow : TimestampedGenerationEntity
 [Index(nameof(Code), IsUnique = true)]
 public sealed class LongGenerationRow : TimestampedGenerationEntity
 {
-    [Column(IsIdentity = true)]
+    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
     public long Id { get; set; }
 
     public string Code { get; set; } = "";

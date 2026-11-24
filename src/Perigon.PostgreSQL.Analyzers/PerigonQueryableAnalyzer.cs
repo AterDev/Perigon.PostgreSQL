@@ -272,7 +272,7 @@ public sealed class PerigonQueryableAnalyzer : DiagnosticAnalyzer
     {
         foreach (var attribute in property.GetAttributes())
         {
-            if (attribute.AttributeClass?.ToDisplayString() != "Perigon.PostgreSQL.Attributes.ColumnAttribute")
+            if (attribute.AttributeClass?.ToDisplayString() != "System.ComponentModel.DataAnnotations.Schema.ColumnAttribute")
             {
                 continue;
             }

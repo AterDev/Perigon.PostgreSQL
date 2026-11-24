@@ -452,7 +452,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         }
 
         return FindAttribute(property.GetAttributes(),
-            "Perigon.PostgreSQL.Attributes.ColumnAttribute",
             "System.ComponentModel.DataAnnotations.Schema.ColumnAttribute") is null;
     }
 
@@ -461,7 +460,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         var viewAttribute = FindAttribute(entity.GetAttributes(), "Perigon.PostgreSQL.Attributes.ViewAttribute");
         var tableAttribute = FindAttribute(
             entity.GetAttributes(),
-            "Perigon.PostgreSQL.Attributes.TableAttribute",
             "System.ComponentModel.DataAnnotations.Schema.TableAttribute");
         var commentAttribute = FindAttribute(
             entity.GetAttributes(),
@@ -474,7 +472,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         var columns = ReadProperties(entity)
             .Where(static property => FindAttribute(
                 property.GetAttributes(),
-                "Perigon.PostgreSQL.Attributes.NotMappedAttribute",
                 "System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute") is null)
             .Where(property => !IsNavigation(property, entityTypes))
             .Select(property => ReadColumn(entity, property))
@@ -501,7 +498,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             ReadProperties(type)
                 .Where(static property => FindAttribute(
                     property.GetAttributes(),
-                    "Perigon.PostgreSQL.Attributes.NotMappedAttribute",
                     "System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute") is null)
                 .Select(property => ReadColumn(type, property))
                 .ToArray());
@@ -531,7 +527,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
     {
         var columnAttribute = FindAttribute(
             property.GetAttributes(),
-            "Perigon.PostgreSQL.Attributes.ColumnAttribute",
             "System.ComponentModel.DataAnnotations.Schema.ColumnAttribute");
         var keyAttribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.KeyAttribute");
         var requiredAttribute = FindAttribute(property.GetAttributes(), "System.ComponentModel.DataAnnotations.RequiredAttribute");
@@ -562,16 +557,13 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             ?? ReadNamedStringArgument(columnAttribute, "Name")
             ?? property.Name;
         var typeName = ReadNamedStringArgument(columnAttribute, "TypeName");
-        var isPrimaryKey = ReadNamedBoolArgument(columnAttribute, "IsPrimaryKey") ||
-                           keyAttribute is not null ||
+        var isPrimaryKey = keyAttribute is not null ||
                            property.Name == "Id" ||
                            property.Name == entity.Name + "Id";
         var conventionIdentity = databaseGeneratedOption != 0 && isPrimaryKey && IsInteger(property.Type);
-        var isIdentity = ReadNamedBoolArgument(columnAttribute, "IsIdentity") ||
-                         databaseGeneratedOption == 1 ||
-                         conventionIdentity;
-        var isGenerated = ReadNamedBoolArgument(columnAttribute, "IsGenerated") || databaseGeneratedOption == 2;
-        var isArray = ReadNamedBoolArgument(columnAttribute, "IsArray") || IsArrayLike(property.Type);
+        var isIdentity = databaseGeneratedOption == 1 || conventionIdentity;
+        var isGenerated = databaseGeneratedOption == 2;
+        var isArray = IsArrayLike(property.Type);
         var autoTimestampAttribute = FindAttribute(property.GetAttributes(), "Perigon.PostgreSQL.Attributes.AutoTimestampAttribute");
         var timestampOnInsert = autoTimestampAttribute is not null && ReadBoolConstructorArgument(autoTimestampAttribute, 0, true);
         var timestampOnUpdate = autoTimestampAttribute is not null && ReadBoolConstructorArgument(autoTimestampAttribute, 1, false);
@@ -1216,7 +1208,6 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
     {
         return FindAttribute(
             type.GetAttributes(),
-            "Perigon.PostgreSQL.Attributes.NotMappedAttribute",
             "System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute") is not null;
     }
 

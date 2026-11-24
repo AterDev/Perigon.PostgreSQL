@@ -1,6 +1,6 @@
-using Perigon.PostgreSQL.Attributes;
 using Perigon.PostgreSQL.Metadata;
 using Perigon.PostgreSQL.Sql;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Perigon.PostgreSQL.Tests.Sql;
 

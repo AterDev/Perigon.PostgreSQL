@@ -3,8 +3,9 @@ using BenchmarkDotNet.Attributes;
 using Dapper;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
-using Perigon.PostgreSQL.Attributes;
 using Perigon.PostgreSQL.Sql;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Perigon.PostgreSQL.Benchmarks;
 
@@ -257,7 +258,9 @@ public class TranslationBenchmarks
 [Table("benchmark_users")]
 public sealed class BenchmarkUser
 {
-    [Column("id", IsPrimaryKey = true, IsIdentity = true)]
+    [Key]
+    [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+    [Column("id")]
     public int Id { get; set; }
 
     [Column("user_name")]

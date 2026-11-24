@@ -174,12 +174,11 @@ public sealed class EntityModel
             throw new InvalidOperationException($"Entity type '{entityType.FullName}' is marked as not mapped.");
         }
 
-        var perigonTable = entityType.GetCustomAttribute<TableAttribute>();
-        var schemaTable = entityType.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.TableAttribute>();
+        var table = entityType.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.TableAttribute>();
         var view = entityType.GetCustomAttribute<ViewAttribute>();
         var entityComment = ReadComment(entityType.GetCustomAttributes(inherit: false));
-        var tableName = view?.Name ?? perigonTable?.Name ?? schemaTable?.Name ?? NamingConventions.DefaultTableName(entityType);
-        var schema = view?.Schema ?? perigonTable?.Schema ?? schemaTable?.Schema;
+        var tableName = view?.Name ?? table?.Name ?? NamingConventions.DefaultTableName(entityType);
+        var schema = view?.Schema ?? table?.Schema;
         var nullability = new NullabilityInfoContext();
         var properties = entityType.GetProperties(BindingFlags.Instance | BindingFlags.Public)
             .Where(p => p.GetMethod is not null && !IsNotMapped(p) && !IsNavigation(p, registeredEntityTypes))
@@ -188,12 +187,10 @@ public sealed class EntityModel
         var columns = new List<ColumnModel>(properties.Length);
         foreach (var property in properties)
         {
-            var perigonColumn = property.GetCustomAttribute<ColumnAttribute>();
-            var schemaColumn = property.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.ColumnAttribute>();
+            var column = property.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.ColumnAttribute>();
             var databaseGenerated = property.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedAttribute>();
             var databaseGeneratedOption = databaseGenerated?.DatabaseGeneratedOption;
-            var isPrimaryKey = perigonColumn?.IsPrimaryKey == true ||
-                               property.GetCustomAttribute<System.ComponentModel.DataAnnotations.KeyAttribute>() is not null ||
+            var isPrimaryKey = property.GetCustomAttribute<System.ComponentModel.DataAnnotations.KeyAttribute>() is not null ||
                                property.Name.Equals("Id", StringComparison.Ordinal) ||
                                property.Name.Equals(entityType.Name + "Id", StringComparison.Ordinal);
             var conventionIdentity = databaseGeneratedOption != System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedOption.None &&
@@ -211,24 +208,24 @@ public sealed class EntityModel
 
             columns.Add(new ColumnModel(
                 property,
-                perigonColumn?.Name ?? schemaColumn?.Name ?? NamingConventions.DefaultColumnName(property.Name),
-                perigonColumn?.TypeName ?? schemaColumn?.TypeName,
+                column?.Name ?? NamingConventions.DefaultColumnName(property.Name),
+                column?.TypeName,
                 isPrimaryKey,
-                perigonColumn?.IsIdentity == true || databaseGeneratedOption == System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedOption.Identity || conventionIdentity,
-                perigonColumn?.IsGenerated == true || databaseGeneratedOption == System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedOption.Computed,
-                perigonColumn?.IsArray == true || IsArrayLike(property.PropertyType),
+                databaseGeneratedOption == System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedOption.Identity || conventionIdentity,
+                databaseGeneratedOption == System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedOption.Computed,
+                IsArrayLike(property.PropertyType),
                 IsNullable(property, nullability),
                 maxLength,
                 precision,
                 scale,
                 comment,
                 isUnicode,
-                hasExplicitName: perigonColumn?.Name is not null || schemaColumn?.Name is not null).WithTimestampPolicy(
+                hasExplicitName: column?.Name is not null).WithTimestampPolicy(
                     property.GetCustomAttribute<AutoTimestampAttribute>(inherit: true)?.OnInsert ?? false,
                     property.GetCustomAttribute<AutoTimestampAttribute>(inherit: true)?.OnUpdate ?? false));
         }
 
-            return new EntityModel(entityType, schema, tableName, columns, Array.Empty<ForeignKeyModel>(), view is not null, ReadIndexDefinitions(entityType), entityComment, isGenerated: false, hasExplicitTableName: view is not null || perigonTable is not null || schemaTable is not null);
+            return new EntityModel(entityType, schema, tableName, columns, Array.Empty<ForeignKeyModel>(), view is not null, ReadIndexDefinitions(entityType), entityComment, isGenerated: false, hasExplicitTableName: view is not null || table is not null);
     }
 
     private IReadOnlyList<IndexModel> CreateIndexes(IReadOnlyList<IndexDefinition> definitions)
@@ -375,8 +372,7 @@ public sealed class EntityModel
 
     private static bool IsNotMapped(MemberInfo member)
     {
-        return member.GetCustomAttribute<NotMappedAttribute>() is not null ||
-               member.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute>() is not null;
+        return member.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute>() is not null;
     }
 
     private static bool IsNavigation(PropertyInfo property, IReadOnlySet<Type> registeredEntityTypes)
@@ -407,8 +403,7 @@ public sealed class EntityModel
 
     private static bool HasExplicitColumnMapping(PropertyInfo property)
     {
-        return property.GetCustomAttribute<ColumnAttribute>() is not null ||
-               property.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.ColumnAttribute>() is not null;
+        return property.GetCustomAttribute<System.ComponentModel.DataAnnotations.Schema.ColumnAttribute>() is not null;
     }
 
     [UnconditionalSuppressMessage(

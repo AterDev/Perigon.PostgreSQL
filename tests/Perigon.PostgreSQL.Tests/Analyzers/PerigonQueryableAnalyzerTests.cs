@@ -3,7 +3,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Perigon.PostgreSQL.Analyzers;
-using Perigon.PostgreSQL.Attributes;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Perigon.PostgreSQL.Tests.Analyzers;
 
@@ -66,7 +66,7 @@ public sealed class PerigonQueryableAnalyzerTests
     public async Task Jsonb_poco_column_reports_dynamic_json_warning()
     {
         var diagnostics = await AnalyzeAsync("""
-            using Perigon.PostgreSQL.Attributes;
+            using System.ComponentModel.DataAnnotations.Schema;
 
             public sealed class UserProfile
             {
@@ -88,7 +88,7 @@ public sealed class PerigonQueryableAnalyzerTests
     public async Task Jsonb_string_column_does_not_report_dynamic_json_warning()
     {
         var diagnostics = await AnalyzeAsync("""
-            using Perigon.PostgreSQL.Attributes;
+            using System.ComponentModel.DataAnnotations.Schema;
 
             public sealed class User
             {
