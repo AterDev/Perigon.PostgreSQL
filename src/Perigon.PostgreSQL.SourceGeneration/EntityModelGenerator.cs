@@ -17,8 +17,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 {
     private static readonly DiagnosticDescriptor UnsupportedMaterializer = new(
         id: "PGSG001",
-        title: "Generated materializer requires a public parameterless constructor",
-        messageFormat: "Type '{0}' is not supported by the generated materializer because it has no public parameterless constructor",
+        title: "Generated materializer requires a callable public parameterless constructor",
+        messageFormat: "Type '{0}' is not supported by the generated materializer because it has no public parameterless constructor callable without setting required members",
         category: "Perigon.PostgreSQL.SourceGeneration",
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
@@ -93,7 +93,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             IsNotMapped(type) ||
             InheritsFrom(type, "Perigon.PostgreSQL.DbContext") ||
             InheritsFrom(type, "Perigon.PostgreSQL.Migrations.Migration") ||
-            !HasPublicParameterlessConstructor(type))
+            !CanUsePublicParameterlessConstructor(type))
         {
             return null;
         }
@@ -155,7 +155,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             {
                 distinct[info.FullName] = info;
             }
-            if (HasPublicParameterlessConstructor(dbSet.EntityType))
+            if (CanUsePublicParameterlessConstructor(dbSet.EntityType))
             {
                 materializers[info.FullName] = info.ToMaterializerInfo();
             }
@@ -236,7 +236,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
     private static bool TryReadMigration(INamedTypeSymbol type, out MigrationInfo migration)
     {
         migration = null!;
-        if (type.Arity != 0 || !HasPublicParameterlessConstructor(type))
+        if (type.Arity != 0 || !CanUsePublicParameterlessConstructor(type))
         {
             return false;
         }
@@ -712,8 +712,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                         ("System.Collections.Generic.List<T>" or "System.Collections.Generic.ICollection<T>" or
                          "System.Collections.Generic.IList<T>" or "System.Collections.Generic.IEnumerable<T>" or
                          "System.Collections.Generic.IReadOnlyCollection<T>" or "System.Collections.Generic.IReadOnlyList<T>") ||
-                    !HasPublicParameterlessConstructor(principal.Symbol) ||
-                    !HasPublicParameterlessConstructor(dependentEntity.Symbol))
+                    !CanUsePublicParameterlessConstructor(principal.Symbol) ||
+                    !CanUsePublicParameterlessConstructor(dependentEntity.Symbol))
                 {
                     continue;
                 }
@@ -748,8 +748,8 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                     IsNullableType(principalKey.Type) ||
                     navigation.SetMethod?.DeclaredAccessibility != Accessibility.Public ||
                     navigation.SetMethod.IsInitOnly ||
-                    !HasPublicParameterlessConstructor(dependent.Symbol) ||
-                    !HasPublicParameterlessConstructor(principal.Symbol) ||
+                    !CanUsePublicParameterlessConstructor(dependent.Symbol) ||
+                    !CanUsePublicParameterlessConstructor(principal.Symbol) ||
                     !SameType(principalKey.Type, dependentKey.Type))
                 {
                     continue;
@@ -1198,10 +1198,30 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                named.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.List<T>";
     }
 
-    private static bool HasPublicParameterlessConstructor(INamedTypeSymbol type)
+    private static bool CanUsePublicParameterlessConstructor(INamedTypeSymbol type)
     {
-        return type.Constructors.Any(static constructor =>
+        var constructor = type.InstanceConstructors.FirstOrDefault(static constructor =>
             constructor.DeclaredAccessibility == Accessibility.Public && constructor.Parameters.Length == 0);
+        if (constructor is null)
+        {
+            return false;
+        }
+
+        if (FindAttribute(constructor.GetAttributes(), "System.Diagnostics.CodeAnalysis.SetsRequiredMembersAttribute") is not null)
+        {
+            return true;
+        }
+
+        for (var current = type; current is not null; current = current.BaseType)
+        {
+            if (current.GetMembers().Any(static member =>
+                member is IPropertySymbol { IsRequired: true } or IFieldSymbol { IsRequired: true }))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool IsNotMapped(INamedTypeSymbol type)

@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.4.2
+
+- The source generator skips materializer factories for types with required members unless their public parameterless constructor declares SetsRequiredMembers. This avoids CS9040 and CS9035 for API request DTOs without mapping annotations. Explicit DbSet types without a callable constructor still report PGSG001.
+
 ## 0.4.1
 
 - The analyzer package now suppresses `CS8618` for source-generated `DbSet<T>` auto-properties on `Perigon.PostgreSQL.DbContext` subclasses. Other uninitialized non-nullable properties still report the warning.

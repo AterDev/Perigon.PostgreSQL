@@ -612,6 +612,55 @@ public sealed class EntityModelGeneratorTests
         Assert.Contains("EntityModelRegistry.Register<global::Demo.ImmutableUser>", generated);
     }
 
+    [Fact]
+    public void Generator_skips_required_members_without_a_qualifying_constructor()
+    {
+        const string source = """
+            using System.Diagnostics.CodeAnalysis;
+            using Perigon.PostgreSQL;
+
+            namespace Demo;
+
+            public sealed class DemoDbContext : DbContext
+            {
+                public DbSet<RequiredEntity> Entities { get; set; }
+            }
+
+            public sealed class RequestDto
+            {
+                public required string Name { get; init; }
+            }
+
+            public abstract class RequiredBase
+            {
+                public required int Code;
+            }
+
+            public sealed class RequiredEntity : RequiredBase
+            {
+                public int Id { get; set; }
+            }
+
+            public sealed class SupportedProjection : RequiredBase
+            {
+                [SetsRequiredMembers]
+                public SupportedProjection() => Code = 1;
+
+                public int Id { get; set; }
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var unsupported = Assert.Single(diagnostics, diagnostic => diagnostic.Id == "PGSG001");
+        Assert.Contains("Demo.RequiredEntity", unsupported.GetMessage());
+        Assert.DoesNotContain("RequestDto", generated);
+        Assert.DoesNotContain("EntityMaterializerRegistry.RegisterFactory<global::Demo.RequiredEntity>", generated);
+        Assert.Contains("EntityModelRegistry.Register<global::Demo.RequiredEntity>", generated);
+        Assert.Contains("EntityMaterializerRegistry.RegisterFactory<global::Demo.SupportedProjection>", generated);
+    }
+
     private static string RunGenerator(string source, out ImmutableArray<Diagnostic> diagnostics)
     {
         var parseOptions = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
