@@ -438,6 +438,7 @@ public sealed class EntityModelGeneratorTests
     {
         const string source = """
             using Perigon.PostgreSQL;
+            using System.Linq;
 
             namespace Demo;
 
@@ -446,6 +447,8 @@ public sealed class EntityModelGeneratorTests
                 public DemoDbContext() : base(_ => { }) { }
 
                 public DbSet<DemoUser> Users => Set<DemoUser>();
+
+                public object Load() => Users.Select(user => new UserProjection { Id = user.Id });
             }
 
             public sealed class DemoUser
@@ -471,7 +474,7 @@ public sealed class EntityModelGeneratorTests
         var generated = RunGenerator(source, out var diagnostics);
 
         Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
-        Assert.Contains("EntityMaterializerRegistry.RegisterFactory<global::Demo.UserProjection>", generated);
+        Assert.Contains("EntityMaterializerRegistry.RegisterProjectionFactory<global::Demo.UserProjection>", generated);
         Assert.Contains("private static global::Demo.UserProjection Materialize_", generated);
         Assert.DoesNotContain("AbstractProjection", generated);
     }
@@ -561,7 +564,9 @@ public sealed class EntityModelGeneratorTests
     public void Generator_uses_distinct_materializer_names_for_colliding_sanitized_types()
     {
         const string source = """
-            using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Attributes;
+            [assembly: GenerateMaterializer(typeof(Demo.A.B))]
+            [assembly: GenerateMaterializer(typeof(Demo.A_B))]
 
             namespace Demo.A
             {
@@ -618,6 +623,8 @@ public sealed class EntityModelGeneratorTests
         const string source = """
             using System.Diagnostics.CodeAnalysis;
             using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Attributes;
+            [assembly: GenerateMaterializer(typeof(Demo.SupportedProjection))]
 
             namespace Demo;
 
@@ -658,16 +665,133 @@ public sealed class EntityModelGeneratorTests
         Assert.DoesNotContain("RequestDto", generated);
         Assert.DoesNotContain("EntityMaterializerRegistry.RegisterFactory<global::Demo.RequiredEntity>", generated);
         Assert.Contains("EntityModelRegistry.Register<global::Demo.RequiredEntity>", generated);
-        Assert.Contains("EntityMaterializerRegistry.RegisterFactory<global::Demo.SupportedProjection>", generated);
+        Assert.Contains("EntityMaterializerRegistry.RegisterProjectionFactory<global::Demo.SupportedProjection>", generated);
     }
 
-    private static string RunGenerator(string source, out ImmutableArray<Diagnostic> diagnostics)
+    [Fact]
+    public void Generator_limits_materializers_to_query_results_and_explicit_registrations()
+    {
+        const string source = """
+            using System;
+            using System.Linq;
+            using System.Linq.Expressions;
+            using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Attributes;
+            using Perigon.PostgreSQL.RawSql;
+            [assembly: GenerateMaterializer(typeof(Demo.ExplicitRow))]
+            [assembly: GenerateMaterializer(typeof(Demo.GenericRow<>))]
+
+            namespace Demo;
+
+            public class User { public int Id { get; set; } }
+            public class SelectRow { public int Id { get; set; } }
+            public class RawRow { public int Id { get; set; } }
+            public class AutoRow { public int Id { get; set; } }
+            public class ExplicitRow { public int Id { get; set; } }
+            public class GenericRow<T> { public T Value { get; set; } }
+            public class RequestDto { public int Id { get; set; } }
+            public class MemoryRow { public int Id { get; set; } }
+            public class Context : DbContext { public DbSet<User> Users { get; set; } }
+
+            public static class Queries
+            {
+                public static void Run(Context db)
+                {
+                    Expression<Func<User, SelectRow>> selector = user => new SelectRow { Id = user.Id };
+                    _ = Queryable.Select(selector: selector, source: db.Users.Where(user => user.Id > 0));
+                    _ = db.Users.Select(user => new { user.Id });
+                    _ = db.Users.ProjectTo<AutoRow>();
+                    _ = db.SqlQuery<RawRow>($"SELECT 1 AS Id").ToListAsync();
+                    _ = db.Users.Select(user => new GenericRow<int> { Value = user.Id }).FirstOrDefaultAsync();
+                    _ = new[] { new User() }.AsQueryable().Select(user => new MemoryRow());
+                    _ = Load(db.Users.Select(user => new ExplicitRow { Id = user.Id }));
+                }
+
+                private static object Load<T>(IQueryable<T> rows) where T : class, new() => rows.ToListAsync();
+            }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("RegisterFactory<global::Demo.User>", generated);
+        foreach (var result in new[] { "SelectRow", "AutoRow", "RawRow", "ExplicitRow", "GenericRow<int>" })
+        {
+            Assert.Contains($"RegisterProjectionFactory<global::Demo.{result}>", generated);
+        }
+
+        Assert.DoesNotContain("RequestDto", generated);
+        Assert.DoesNotContain("MemoryRow", generated);
+        Assert.DoesNotContain("AnonymousType", generated);
+        Assert.DoesNotContain("RegisterProjectionFactory<global::Demo.GenericRow<T>>", generated);
+    }
+
+    [Fact]
+    public void Generator_discovers_public_results_from_a_referenced_assembly()
+    {
+        var contracts = CSharpCompilation.Create(
+            "ExternalContracts",
+            [CSharpSyntaxTree.ParseText("""
+                namespace Contracts;
+                public class ExternalRow { public int Id { get; set; } }
+                public class UnusedDto { public int Id { get; set; } }
+                public class ExplicitRow { public int Id { get; set; } }
+                """)],
+            GetMetadataReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var queries = """
+            using System.Linq;
+            using Perigon.PostgreSQL;
+            using Perigon.PostgreSQL.Attributes;
+            [assembly: GenerateMaterializer(typeof(Contracts.ExplicitRow))]
+
+            public static class Queries
+            {
+                public static object Load(IQueryable<Contracts.ExternalRow> query) =>
+                    PostgresQueryableExtensions.ToListAsync(query);
+
+                public static object LoadOpen<T>(IQueryable<T> query) where T : class, new() =>
+                    PostgresQueryableExtensions.ToListAsync(query);
+            }
+            """;
+
+        var generated = RunGenerator(queries, out var diagnostics, contracts.ToMetadataReference());
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("RegisterProjectionFactory<global::Contracts.ExternalRow>", generated);
+        Assert.Contains("RegisterProjectionFactory<global::Contracts.ExplicitRow>", generated);
+        Assert.DoesNotContain("UnusedDto", generated);
+        Assert.DoesNotContain("RegisterProjectionFactory<T>", generated);
+    }
+
+    [Fact]
+    public void Generator_reports_required_result_only_when_requested()
+    {
+        const string source = """
+            using Perigon.PostgreSQL.Attributes;
+            [assembly: GenerateMaterializer(typeof(RequiredResult))]
+            [assembly: GenerateMaterializer(typeof(RequiredResult))]
+            public class RequiredResult { public required string Name { get; init; } }
+            public class ApiRequest { public required string Name { get; init; } }
+            """;
+
+        var generated = RunGenerator(source, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.Contains("RequiredResult", Assert.Single(diagnostics, diagnostic => diagnostic.Id == "PGSG001").GetMessage());
+        Assert.DoesNotContain("RegisterProjectionFactory<global::RequiredResult>", generated);
+        Assert.DoesNotContain("ApiRequest", generated);
+    }
+
+    private static string RunGenerator(string source, out ImmutableArray<Diagnostic> diagnostics,
+        params MetadataReference[] additionalReferences)
     {
         var parseOptions = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Preview);
         var compilation = CSharpCompilation.Create(
             assemblyName: "GeneratorTests",
             syntaxTrees: [CSharpSyntaxTree.ParseText(source, parseOptions)],
-            references: GetMetadataReferences(),
+            references: GetMetadataReferences().Concat(additionalReferences),
             options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         GeneratorDriver driver = CSharpGeneratorDriver.Create(
@@ -677,8 +801,8 @@ public sealed class EntityModelGeneratorTests
 
         diagnostics = outputCompilation.GetDiagnostics().AddRange(generatorDiagnostics);
         var runResult = driver.GetRunResult();
-        var generatedTree = Assert.Single(runResult.GeneratedTrees);
-        return generatedTree.ToString();
+        var generatedTree = runResult.GeneratedTrees.SingleOrDefault();
+        return generatedTree?.ToString() ?? string.Empty;
     }
 
     private static MetadataReference[] GetMetadataReferences()

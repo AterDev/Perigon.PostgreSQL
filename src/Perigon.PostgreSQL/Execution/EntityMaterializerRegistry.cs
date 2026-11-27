@@ -50,6 +50,25 @@ public static class EntityMaterializerRegistry
         }
     }
 
+    /// <summary>Registers a generated projection without replacing an existing mapped or custom materializer.</summary>
+    public static void RegisterProjectionFactory<T>(Func<NpgsqlDataReader, Func<NpgsqlDataReader, T>> factory)
+        where T : class, new()
+    {
+        lock (Sync)
+        {
+            if (Registrations.ContainsKey(typeof(T)))
+            {
+                return;
+            }
+
+            var updated = new Dictionary<Type, Registration>(Registrations)
+            {
+                [typeof(T)] = new Registration(factory, isFactory: true)
+            };
+            Volatile.Write(ref Registrations, updated);
+        }
+    }
+
     public static bool TryGet<T>(out Func<NpgsqlDataReader, T> materializer)
         where T : class, new()
     {

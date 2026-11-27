@@ -41,9 +41,20 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
 
         var materializerTypes = context.SyntaxProvider
             .CreateSyntaxProvider(
-                static (node, _) => node is ClassDeclarationSyntax or RecordDeclarationSyntax,
-                static (syntaxContext, _) => TryReadMaterializerType(syntaxContext))
+                static (node, _) => node is InvocationExpressionSyntax,
+                static (syntaxContext, _) => TryReadQueryMaterializer(syntaxContext))
             .Where(static type => type is not null);
+
+        var explicitMaterializers = context.CompilationProvider.Select(static (compilation, _) =>
+            compilation.Assembly.GetAttributes()
+                .Where(static attribute => attribute.AttributeClass?.ToDisplayString() ==
+                    "Perigon.PostgreSQL.Attributes.GenerateMaterializerAttribute")
+                .Select(attribute => attribute.ConstructorArguments.Length == 1 &&
+                    attribute.ConstructorArguments[0].Value is INamedTypeSymbol type &&
+                    IsMaterializerType(type, compilation)
+                        ? type
+                        : null)
+                .ToImmutableArray());
 
         var migrationTypes = context.SyntaxProvider
             .CreateSyntaxProvider(
@@ -52,11 +63,11 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             .Where(static type => type is not null);
 
         context.RegisterSourceOutput(
-            dbSetEntities.Collect().Combine(materializerTypes.Collect()).Combine(migrationTypes.Collect()),
+            dbSetEntities.Collect().Combine(materializerTypes.Collect().Combine(explicitMaterializers)).Combine(migrationTypes.Collect()),
             static (productionContext, input) => Execute(
                 productionContext,
                 input.Left.Left,
-                input.Left.Right,
+                input.Left.Right.Left.AddRange(input.Left.Right.Right),
                 input.Right));
     }
 
@@ -84,21 +95,106 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         return new DbSetInfo(contextType, entityType, initialize ? propertySymbol.Name : null);
     }
 
-    private static INamedTypeSymbol? TryReadMaterializerType(GeneratorSyntaxContext context)
+    private static INamedTypeSymbol? TryReadQueryMaterializer(GeneratorSyntaxContext context)
     {
-        if (context.SemanticModel.GetDeclaredSymbol(context.Node) is not INamedTypeSymbol type ||
-            type.IsAbstract ||
-            type.IsGenericType ||
-            !IsAccessibleFromGeneratedCode(type) ||
-            IsNotMapped(type) ||
-            InheritsFrom(type, "Perigon.PostgreSQL.DbContext") ||
-            InheritsFrom(type, "Perigon.PostgreSQL.Migrations.Migration") ||
-            !CanUsePublicParameterlessConstructor(type))
+        var invocation = (InvocationExpressionSyntax)context.Node;
+        var model = context.SemanticModel;
+        if (model.GetSymbolInfo(invocation).Symbol is not IMethodSymbol method ||
+            method.TypeArguments.Length == 0)
         {
             return null;
         }
 
-        return type;
+        var owner = (method.ReducedFrom ?? method).ContainingType.ToDisplayString();
+        ITypeSymbol? result = (owner, method.Name) switch
+        {
+            ("Perigon.PostgreSQL.DbContext", "Set" or "SetWithoutFilters" or "SqlQuery") => method.TypeArguments[0],
+            ("Perigon.PostgreSQL.PostgresQueryableExtensions", "ToListAsync" or "FirstOrDefaultAsync" or
+                "SingleOrDefaultAsync" or "InsertAsync" or "InsertManyReturningAsync" or "ProjectTo") => method.TypeArguments[0],
+            ("Perigon.PostgreSQL.RawSql.RawSqlExtensions", "ToListAsync") => method.TypeArguments[0],
+            ("Perigon.PostgreSQL.IncludeManyExtensions", "IncludeManyToManyAsync") => method.TypeArguments[0],
+            ("System.Linq.Queryable", "Select" or "Join" or "SelectMany")
+                when GetQuerySource(invocation, method) is { } source && IsPostgresQuery(source, model)
+                => method.TypeArguments[method.TypeArguments.Length - 1],
+            _ => null
+        };
+
+        return result is INamedTypeSymbol type && IsMaterializerType(type, model.Compilation) ? type : null;
+    }
+
+    private static ExpressionSyntax? GetQuerySource(InvocationExpressionSyntax invocation, IMethodSymbol method)
+    {
+        if (method.ReducedFrom is not null)
+        {
+            return (invocation.Expression as MemberAccessExpressionSyntax)?.Expression;
+        }
+
+        var arguments = invocation.ArgumentList.Arguments;
+        return arguments.FirstOrDefault(argument => argument.NameColon?.Name.Identifier.ValueText ==
+                   method.Parameters[0].Name)?.Expression
+            ?? arguments.FirstOrDefault()?.Expression;
+    }
+
+    private static bool IsPostgresQuery(ExpressionSyntax source, SemanticModel model)
+    {
+        while (true)
+        {
+            if (model.GetTypeInfo(source).Type is INamedTypeSymbol type &&
+                type.OriginalDefinition.ToDisplayString() == "Perigon.PostgreSQL.DbSet<T>")
+            {
+                return true;
+            }
+
+            if (source is ParenthesizedExpressionSyntax parenthesized)
+            {
+                source = parenthesized.Expression;
+                continue;
+            }
+
+            if (source is not InvocationExpressionSyntax invocation ||
+                model.GetSymbolInfo(invocation).Symbol is not IMethodSymbol method)
+            {
+                return false;
+            }
+
+            var owner = (method.ReducedFrom ?? method).ContainingType.ToDisplayString();
+            if (owner == "Perigon.PostgreSQL.PostgresQueryableExtensions" && method.Name == "ProjectTo")
+            {
+                return true;
+            }
+
+            if (owner != "System.Linq.Queryable" || GetQuerySource(invocation, method) is not { } inner)
+            {
+                return false;
+            }
+
+            source = inner;
+        }
+    }
+
+    private static bool IsMaterializerType(INamedTypeSymbol type, Compilation compilation)
+    {
+        return type.TypeKind == TypeKind.Class &&
+            !type.IsAbstract &&
+            !type.IsAnonymousType &&
+            type.SpecialType == SpecialType.None &&
+            IsClosedAccessibleType(type, compilation) &&
+            !IsNotMapped(type) &&
+            !InheritsFrom(type, "Perigon.PostgreSQL.DbContext") &&
+            !InheritsFrom(type, "Perigon.PostgreSQL.Migrations.Migration");
+    }
+
+    private static bool IsClosedAccessibleType(ITypeSymbol type, Compilation compilation)
+    {
+        return type switch
+        {
+            IArrayTypeSymbol array => IsClosedAccessibleType(array.ElementType, compilation),
+            INamedTypeSymbol named => !named.IsFileLocal && !named.IsUnboundGenericType &&
+                compilation.IsSymbolAccessibleWithin(named, compilation.Assembly) &&
+                (named.ContainingType is null || IsClosedAccessibleType(named.ContainingType, compilation)) &&
+                named.TypeArguments.All(argument => IsClosedAccessibleType(argument, compilation)),
+            _ => false
+        };
     }
 
     private static INamedTypeSymbol? TryReadMigrationType(GeneratorSyntaxContext context)
@@ -184,11 +280,19 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
                 continue;
             }
 
-            var info = ReadMaterializer(type);
-            if (!distinct.ContainsKey(info.FullName))
+            var fullName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            if (distinct.ContainsKey(fullName) || materializers.ContainsKey(fullName))
             {
-                materializers[info.FullName] = info;
+                continue;
             }
+
+            if (!CanUsePublicParameterlessConstructor(type))
+            {
+                ReportUnsupported(type);
+                continue;
+            }
+
+            materializers[fullName] = ReadMaterializer(type);
         }
 
         foreach (var type in migrationTypes
@@ -515,7 +619,7 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
         {
             foreach (var property in stack.Pop().GetMembers().OfType<IPropertySymbol>())
             {
-                if (!property.IsStatic && property.DeclaredAccessibility == Accessibility.Public && property.GetMethod is not null)
+                if (!property.IsStatic && !property.IsIndexer && property.DeclaredAccessibility == Accessibility.Public && property.GetMethod is not null)
                 {
                     yield return property;
                 }
@@ -806,9 +910,11 @@ public sealed class EntityModelGenerator : IIncrementalGenerator
             }
         }
 
+        var entityNames = new HashSet<string>(entityList.Select(static entity => entity.FullName), StringComparer.Ordinal);
         foreach (var materializer in materializerList)
         {
-            builder.AppendLine($"            global::Perigon.PostgreSQL.Execution.EntityMaterializerRegistry.RegisterFactory<{materializer.FullName}>(CreateMaterializer_{materializer.SafeName});");
+            var method = entityNames.Contains(materializer.FullName) ? "RegisterFactory" : "RegisterProjectionFactory";
+            builder.AppendLine($"            global::Perigon.PostgreSQL.Execution.EntityMaterializerRegistry.{method}<{materializer.FullName}>(CreateMaterializer_{materializer.SafeName});");
         }
 
         builder.AppendLine("        }");

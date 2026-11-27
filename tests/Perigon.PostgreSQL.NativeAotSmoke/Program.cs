@@ -76,6 +76,12 @@ if (!EntityValueAccessorRegistry.TryGetAccessor(typeof(SmokeUser), nameof(SmokeU
     throw new InvalidOperationException("NativeAOT smoke test expected generated entity value accessors.");
 }
 
+if (!EntityMaterializerRegistry.TryGetFactory<ExplicitResult>(out _) ||
+    EntityMaterializerRegistry.TryGetFactory<UnrelatedRequest>(out _))
+{
+    throw new InvalidOperationException("NativeAOT smoke expected only the explicitly registered result to have a factory.");
+}
+
 var registeredMigrations = MigrationRegistry.GetContextMigrations<SmokeDbContext>();
 if (registeredMigrations.Count != 1 || registeredMigrations[0].Id != "0001_aot_registry")
 {

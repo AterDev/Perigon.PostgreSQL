@@ -8,7 +8,7 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <PackageId>Perigon.PostgreSQL</PackageId>
     <Title>Perigon.PostgreSQL</Title>
-    <Version>0.4.2</Version>
+    <Version>0.4.3</Version>
     <Authors>Niltor</Authors>
     <Company>AterDev</Company>
     <Description>PostgreSQL-only NativeAOT-friendly data access library with deterministic SQL, LINQ
@@ -20,7 +20,7 @@
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <PackageIcon>perigon_logo.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>Skips materializer factories for types with required members unless their public parameterless constructor sets them. See RELEASE_NOTES.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>Limits generated materializers to mapped entities, query result types, and explicit registrations. See RELEASE_NOTES.md.</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>

@@ -41,6 +41,29 @@ public sealed class EntityModelTests
     }
 
     [Fact]
+    public void Projection_registration_preserves_mapped_and_manual_materializers()
+    {
+        EntityMaterializerRegistry.RegisterProjectionFactory<ProjectionRegistrationRow>(_ => _ => new() { Value = 1 });
+        Assert.True(EntityMaterializerRegistry.TryGet<ProjectionRegistrationRow>(out var materialize));
+        Assert.Equal(1, materialize(null!).Value);
+
+        EntityMaterializerRegistry.RegisterFactory<ProjectionRegistrationRow>(_ => _ => new() { Value = 2 });
+        EntityMaterializerRegistry.RegisterProjectionFactory<ProjectionRegistrationRow>(_ => _ => new() { Value = 3 });
+        Assert.True(EntityMaterializerRegistry.TryGet<ProjectionRegistrationRow>(out materialize));
+        Assert.Equal(2, materialize(null!).Value);
+
+        EntityMaterializerRegistry.Register<ProjectionRegistrationRow>(_ => new() { Value = 4 });
+        EntityMaterializerRegistry.RegisterProjectionFactory<ProjectionRegistrationRow>(_ => _ => new() { Value = 5 });
+        Assert.True(EntityMaterializerRegistry.TryGet<ProjectionRegistrationRow>(out materialize));
+        Assert.Equal(4, materialize(null!).Value);
+    }
+
+    private sealed class ProjectionRegistrationRow
+    {
+        public int Value { get; init; }
+    }
+
+    [Fact]
     public void Convention_model_treats_id_as_primary_key_and_identity()
     {
         var model = EntityModel.For<ConventionUser>();

@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.4.3
+
+- Generate PostgreSQL materializers for mapped entities, statically identifiable query results, and explicit `[assembly: GenerateMaterializer(typeof(Result))]` registrations. Plain DTO declarations and in-memory LINQ queries no longer trigger generation.
+
 ## 0.4.2
 
 - The source generator skips materializer factories for types with required members unless their public parameterless constructor declares SetsRequiredMembers. This avoids CS9040 and CS9035 for API request DTOs without mapping annotations. Explicit DbSet types without a callable constructor still report PGSG001.
