@@ -1,6 +1,6 @@
 # Release Notes
 
-## 0.4.1 (unreleased)
+## 0.4.1
 
 - The analyzer package now suppresses `CS8618` for source-generated `DbSet<T>` auto-properties on `Perigon.PostgreSQL.DbContext` subclasses. Other uninitialized non-nullable properties still report the warning.
 
